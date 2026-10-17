@@ -136,6 +136,7 @@ export function createLocalHandler({ query, records, store, ai }) {
         chapters: qs.get('chapters') ? qs.get('chapters').split(',') : undefined,
         group: qs.get('group') || undefined,
         sub: qs.get('sub') || undefined,
+        leaf: qs.get('leaf') || undefined, // 细分考点过滤（与 server /api/practice 同参；Task 6 支持）
         mock: qs.get('mock') || '',
         n: Number(qs.get('n') || 10),
         year: qs.get('year') || undefined, // 自定义刷题：'all'|'3'|'5'|'10'；缺省近十年

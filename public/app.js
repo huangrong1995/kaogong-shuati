@@ -428,6 +428,7 @@ function goBack() {
   else if (top.name === 'custom-bank') renderCustomBank(true);
   else if (top.name === 'custom-batch') renderCustomBatch(top.batchId, true);
   else if (top.name === 'skill-import') renderAiSettings();
+  else if (top.name === 'ability') renderAbility(true);
   else renderHome();
 }
 
@@ -443,6 +444,7 @@ function exitSingle() {
   else if (src && src.name === 'wrong') renderWrong();
   else if (src && src.name === 'notes') renderNotes();
   else if (src && src.name === 'notes-list') renderNotesList(src.groupKey, src.subKey, src.subName, true);
+  else if (src && src.name === 'ability') renderAbility(true);
   else renderHome();
 }
 
@@ -4354,6 +4356,7 @@ async function renderWrongTab(view) {
     <div class="wrong-card-head">
       <div class="wrong-stat"><div class="ws-num">${g.count}</div><div class="ws-label">${esc(name)} · 待订错题</div></div>
       <div class="wrong-actions">
+        <button class="btn btn-ghost" id="wrong-ability" title="AI 能力诊断：雷达图 + 薄弱定位">${ico('chart', 15)} 能力诊断</button>
         <button class="btn btn-primary" id="wrong-random" title="从当前模块错题随机抽 10-15 题练习">${ico('play', 15)} 随机练习</button>
         <button class="btn btn-ghost" id="wrong-organize" title="自动归类历史未分类错题">${ico('folderTree', 15)} 一键整理</button>
         <button class="btn btn-danger" id="clear-wrong" title="移除该模块全部错题记录">${ico('trash', 15)} 清空错题</button>
@@ -4361,6 +4364,7 @@ async function renderWrongTab(view) {
     </div>
     <div class="li-tip">${ico('lightbulb', 13)} 点击子模块查看对应错题，点击错题可直接重做</div>`);
   view.appendChild(card);
+  $('#wrong-ability').onclick = () => renderAbility();
   $('#wrong-random').onclick = () => startWrongRandom(tab, '');
   $('#wrong-organize').onclick = () => organizeModule('wrong', () => renderWrongTab(view));
   $('#clear-wrong').onclick = () => clearWrongGroup(tab, name, () => renderWrongTab(view));
@@ -4413,11 +4417,13 @@ async function renderWrongList(groupKey, subKey, subName, skipNav) {
       <div class="wrong-card-head">
         <div class="wrong-stat"><div class="ws-num">${wState.total}</div><div class="ws-label">${esc(subName)} · 待订错题</div></div>
         <div class="wrong-actions">
+          <button class="btn btn-ghost" id="wrong-ability" title="AI 能力诊断：雷达图 + 薄弱定位">${ico('chart', 15)} 能力诊断</button>
           <button class="btn btn-primary" id="wrong-random" title="从当前模块错题随机抽 10-15 题练习">${ico('play', 15)} 随机练习</button>
         </div>
       </div>
       <div class="li-tip">${ico('lightbulb', 13)} 点击任意错题可直接重做该题</div>`);
     view.appendChild(card);
+    $('#wrong-ability').onclick = () => renderAbility();
     $('#wrong-random').onclick = () => startWrongRandom(groupKey, subKey);
     const listEl = el('div', 'list-grid');
     for (const w of list) {
@@ -4603,6 +4609,305 @@ async function openQuestionBatch(type, questionId, groupKey, subKey, subName) {
   store.navStack.push({ name: layerName, groupKey, subKey, subName });
   const subject = groupKey || questions[0].subject || '公务员·行测';
   enterQuiz(questions, subject, 'batch', null, '0');
+}
+
+// ---------- AI 能力诊断（能力矩阵 + 雷达图 + 薄弱点针对性训练） ----------
+const AB_SETTINGS_KEY = 'ability_settings_v1';
+const AB_PRESETS = {
+  guokao: { base: 62, steady: 68, high: 75 },
+  fujian: { base: 65, steady: 72, high: 78 },
+};
+const AB_EXAMS = [
+  { key: 'guokao', label: '国考' },
+  { key: 'fujian', label: '福建省考' },
+];
+const AB_LEVELS = [
+  { key: 'base', label: '打底', tip: '保底目标，适合基础薄弱阶段' },
+  { key: 'steady', label: '稳妥上岸', tip: '主流备考目标（默认）' },
+  { key: 'high', label: '高分挑战', tip: '冲击高分，需严格控时' },
+];
+let abResizeH = null;      // 雷达图 resize 重绘监听（每次渲染先解绑避免叠加）
+let abReloadT = null;      // 自定义目标分输入防抖定时器
+let abRadarMod = null;     // radar-chart 模块懒加载缓存
+let abState = { diagLoading: false, data: null, settings: null };
+
+function loadAbilitySettings() {
+  const d = { exam: 'guokao', preset: 'steady', custom: 68, k: 0.35 };
+  try { return Object.assign(d, JSON.parse(localStorage.getItem(AB_SETTINGS_KEY) || '{}')); }
+  catch { return d; }
+}
+function saveAbilitySettings(s) { localStorage.setItem(AB_SETTINGS_KEY, JSON.stringify(s)); }
+/** 当前目标分（整数 50–100）：预设档位取预设分，自定义档取输入分 */
+function abilityTarget(s) {
+  const p = AB_PRESETS[s.exam] || AB_PRESETS.guokao;
+  if (s.preset !== 'custom' && p[s.preset] != null) return p[s.preset];
+  return Math.max(50, Math.min(100, Math.round(Number(s.custom) || 0)));
+}
+/** radar-chart 懒加载：返回 drawRadar（浏览器动态 import，模块只加载一次） */
+function radarDraw() {
+  if (!abRadarMod) abRadarMod = import('./lib/radar-chart.js');
+  return abRadarMod.then((m) => m.drawRadar);
+}
+
+/** 能力诊断视图：目标设置 + 雷达图 + 模块网格 + AI 诊断；skipNav 时（返回/改设置）不重复压栈 */
+async function renderAbility(skipNav) {
+  if (!skipNav) store.navStack.push({ name: 'ability' });
+  setView('ability');
+  $('#app-title').textContent = 'AI 能力诊断';
+  [...document.querySelectorAll('#topbar-right > *:not(#btn-theme)')].forEach(n => n.remove());
+  const view = $('#view');
+  view.innerHTML = '<div class="spinner"></div>';
+  const settings = loadAbilitySettings();
+  abState.settings = settings;
+  try {
+    const m = await api(`/api/ability?exam=${encodeURIComponent(settings.exam)}&target=${abilityTarget(settings) / 100}&k=${settings.k}`);
+    abState.data = m;
+    renderAbilityContent(view, m, settings);
+  } catch (e) {
+    view.innerHTML = `<div class="empty">加载失败：${esc(e.message)}</div>`;
+  }
+}
+
+function renderAbilityContent(view, m, settings) {
+  view.innerHTML = '';
+  const s = settings;
+  const empty = m.groups.every((g) => g.total === 0);
+
+  // 目标设置卡
+  const settingsCard = el('div', 'card', `
+    <h3>${ico('target', 17)} 目标设置</h3>
+    <div class="cfg-group" style="margin-top:8px">考试</div>
+    <div class="chip-row" id="ab-exam">
+      ${AB_EXAMS.map((e) => `<span class="chip${e.key === s.exam ? ' on' : ''}" data-exam="${e.key}">${e.label}</span>`).join('')}
+    </div>
+    <div class="cfg-group">目标档位</div>
+    <div class="chip-row" id="ab-level">
+      ${AB_LEVELS.map((l) => `<span class="chip${s.preset === l.key ? ' on' : ''}" data-level="${l.key}" title="${l.tip}">${l.label}</span>`).join('')}
+    </div>
+    <div class="cfg-group">自定义目标分（50–100）</div>
+    <div class="chip-row" style="align-items:center">
+      <input type="number" id="ab-custom" class="field-input" min="50" max="100" step="1" value="${abilityTarget(s)}" style="width:112px;padding:9px 10px">
+      <span class="cfg-note">目标分 → 达标正确率 = 目标分%</span>
+    </div>
+    <div id="ab-convert" class="cfg-tip"></div>
+  `);
+  view.appendChild(settingsCard);
+
+  // 雷达图卡
+  const radarCard = el('div', 'card', `
+    <h3>${ico('chart', 17)} 能力雷达</h3>
+    <div class="ability-radar">
+      ${empty
+        ? `<div class="empty" style="padding:36px 16px"><span class="empty-ico">${ico('chart', 34)}</span>暂无做题数据，去刷题</div>`
+        : `<canvas id="ab-radar" width="0" height="0"></canvas>`}
+    </div>
+    <div class="radar-legend">
+      <span class="rl-item"><i class="rl-line solid"></i>我的正确率</span>
+      <span class="rl-item"><i class="rl-line dash"></i>达标线</span>
+    </div>
+  `);
+  view.appendChild(radarCard);
+  if (!empty) drawAbilityRadar(radarCard.querySelector('#ab-radar'), m);
+
+  // 六大模块卡网格（点击卡头展开子模块/细分考点；训练按钮走事件委托）
+  const grid = el('div', 'ability-modules');
+  for (const g of m.groups) grid.appendChild(abilityModuleEl(g));
+  view.appendChild(grid);
+  grid.addEventListener('click', (e) => {
+    const btn = e.target.closest('.am-train, .as-train, .al-train');
+    if (!btn) return;
+    const card = e.target.closest('.ability-module');
+    if (!card) return;
+    abilityTrain(card.dataset.group, btn.dataset.sub || null, btn.dataset.leaf || null);
+  });
+
+  // AI 诊断区
+  const diagCard = el('div', 'card', `
+    <h3>${ico('sparkles', 17)} AI 能力诊断</h3>
+    <div class="li-sub">AI 基于能力矩阵与错题清单，把薄弱定位到细分考点并给出方法论建议；需在「AI 设置」为「错题诊断顾问」配置 api_key。</div>
+    <button class="btn btn-primary btn-block" id="ab-diag-btn" ${empty ? 'disabled' : ''}>${ico('sparkles', 15)} AI 能力诊断</button>
+    <div id="ab-diag-box"></div>
+  `);
+  view.appendChild(diagCard);
+  $('#ab-diag-btn').onclick = abilityDiagnose;
+
+  bindAbilitySettings(view, m);
+}
+
+/** 绘制雷达图 + 注册 resize 重绘（每次渲染先解绑旧监听） */
+function drawAbilityRadar(canvas, m) {
+  if (!canvas) return;
+  const labels = m.groups.map((g) => g.group);
+  const values = m.groups.map((g) => g.rate / 100);
+  const lineValues = m.groups.map((g) => g.line / 100);
+  const met = m.groups.map((g) => g.met);
+  const paint = () => radarDraw().then((drawRadar) => drawRadar(canvas, { labels, values, lineValues, met })).catch(() => {});
+  paint();
+  if (abResizeH) window.removeEventListener('resize', abResizeH);
+  abResizeH = paint;
+  window.addEventListener('resize', abResizeH);
+}
+
+/** 设置卡交互：考试/档位 chip + 自定义目标分输入 → 持久化并重拉 /api/ability */
+function bindAbilitySettings(view, m) {
+  const s = abState.settings || loadAbilitySettings();
+  const refreshConvert = () => {
+    const tip = $('#ab-convert');
+    if (!tip) return;
+    const t = abilityTarget(s);
+    const lines = m.groups.map((g) => `${g.group} ${g.line}`).join(' / ');
+    tip.innerHTML = `${ico('info', 13)} 目标分 ${t} → 达标正确率 ${t}% → 各模块达标线：${esc(lines)}`;
+  };
+  refreshConvert();
+
+  const reload = () => {
+    saveAbilitySettings(s);
+    renderAbility(true);
+  };
+  view.querySelectorAll('#ab-exam .chip').forEach((chip) => {
+    chip.onclick = () => {
+      view.querySelectorAll('#ab-exam .chip').forEach((c) => c.classList.toggle('on', c === chip));
+      s.exam = chip.dataset.exam;
+      reload();
+    };
+  });
+  view.querySelectorAll('#ab-level .chip').forEach((chip) => {
+    chip.onclick = () => {
+      view.querySelectorAll('#ab-level .chip').forEach((c) => c.classList.toggle('on', c === chip));
+      s.preset = chip.dataset.level;
+      s.custom = abilityTarget(s);
+      reload();
+    };
+  });
+  const input = $('#ab-custom');
+  if (input) input.addEventListener('input', () => {
+    s.preset = 'custom';
+    s.custom = Number(input.value) || 0;
+    clearTimeout(abReloadT);
+    abReloadT = setTimeout(reload, 350);
+  });
+}
+
+/** 达标徽章三色：✔ 达标（绿）/ ✕ 未达标（红）/ ⚠ 数据不足（灰，enough=false） */
+function abilityBadge(g) {
+  if (!g.enough) return `<span class="am-badge badge-insuff">⚠ 数据不足</span>`;
+  return g.met ? `<span class="am-badge badge-ok">✔ 达标</span>` : `<span class="am-badge badge-no">✕ 未达标</span>`;
+}
+
+function abilityModuleEl(g) {
+  const badge = abilityBadge(g);
+  const card = el('div', `card ability-module${g.subs.length ? ' expandable' : ''}`, `
+    <div class="am-head">
+      <div class="am-name">${esc(g.group)}</div>
+      <div class="am-stat">
+        <span class="am-rate">${g.total ? g.rate : '—'}%</span>${badge}
+      </div>
+    </div>
+    <div class="am-meta">${g.total ? `已练 ${g.total} 题 · 答对 ${g.correct} 题` : '暂无做题记录'}</div>
+    <div class="am-actions"><button class="btn btn-ghost am-train">${ico('zap', 14)} 针对性训练</button></div>
+    ${g.subs.length ? `<div class="am-body" style="display:none">${g.subs.map((sg) => abilitySubRows(g, sg)).join('')}</div>` : ''}
+  `);
+  card.dataset.group = g.group;
+  if (g.subs.length) {
+    card.querySelector('.am-head').onclick = () => {
+      const body = card.querySelector('.am-body');
+      const open = body.style.display === 'none';
+      body.style.display = open ? '' : 'none';
+      card.classList.toggle('open', open);
+    };
+  }
+  return card;
+}
+
+function abilitySubRows(g, sg) {
+  const rate = sg.rate != null ? sg.rate : (sg.total ? Math.round((sg.correct / sg.total) * 100) : 0);
+  const leafs = (sg.leaves || []).map((l) => abilityLeafRow(g, sg, l)).join('');
+  return `
+    <div class="ability-sub-row">
+      <div class="as-top">
+        <span class="as-name">${esc(sg.sub)}</span>
+        <span class="as-rate">${sg.total ? `${rate}%` : '—'}<span class="as-n">（答对 ${sg.correct}/${sg.total}）</span></span>
+        <button class="btn btn-sm as-train" data-sub="${esc(sg.sub)}">${ico('zap', 13)} 训练</button>
+      </div>
+      <div class="as-track"><div class="as-fill" style="width:${sg.total ? rate : 0}%"></div></div>
+    </div>
+    ${leafs ? `<div class="ability-leaf-rows">${leafs}</div>` : ''}
+  `;
+}
+
+function abilityLeafRow(g, sg, l) {
+  const rate = l.rate != null ? l.rate : (l.total ? Math.round((l.correct / l.total) * 100) : 0);
+  return `
+    <div class="ability-leaf-row">
+      <span class="al-name">${esc(l.leaf)}</span>
+      <span class="al-rate">${l.total ? `${rate}%` : '—'}<span class="as-n">（答对 ${l.correct}/${l.total}）</span></span>
+      <button class="btn btn-sm al-train" data-sub="${esc(sg.sub)}" data-leaf="${esc(l.leaf)}">${ico('zap', 13)} 训练</button>
+    </div>
+  `;
+}
+
+/** 针对性训练：按大模块/子模块/细分考点出 10 题（leaf 必带，未命中提示）；进入标准练习并压来源层 */
+async function abilityTrain(group, sub, leaf) {
+  let url = `/api/practice?subject=${encodeURIComponent('公务员·行测')}&group=${encodeURIComponent(group)}&n=10`;
+  if (sub) url += `&sub=${encodeURIComponent(sub)}`;
+  if (leaf) url += `&leaf=${encodeURIComponent(leaf)}`;
+  let qs = [];
+  try { qs = await api(url); } catch (e) { toast('训练出题失败：' + e.message); return; }
+  if (!qs.length) { toast('该考点暂无题可练'); return; }
+  const topLayer = store.navStack[store.navStack.length - 1];
+  store.navStack.push((topLayer && topLayer.name === 'ability') ? { ...topLayer } : { name: 'ability' });
+  enterQuiz(qs, '公务员·行测', 'practice', null, '0', null, false);
+}
+
+/** AI 能力诊断：POST /api/ai/diagnose → content 渲染 / notice 灰显；成功后提供「复制报告」 */
+async function abilityDiagnose() {
+  const btn = $('#ab-diag-btn');
+  const box = $('#ab-diag-box');
+  if (!btn || abState.diagLoading) return;
+  const s = abState.settings || loadAbilitySettings();
+  btn.disabled = true;
+  btn.innerHTML = `${ico('sparkles', 15)} 诊断中…`;
+  abState.diagLoading = true;
+  box.innerHTML = '';
+  try {
+    const r = await api('/api/ai/diagnose', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ target: abilityTarget(s) / 100, exam: s.exam, k: s.k }),
+    });
+    if (r && r.content) {
+      box.innerHTML = `<div class="ai-diag">${esc(r.content)}</div>
+        <div class="action-row" style="margin-top:10px">
+          <button class="btn btn-ghost" id="ab-diag-copy">${ico('clipboard', 14)} 复制报告</button>
+        </div>`;
+      $('#ab-diag-copy').onclick = () => abilityCopyText(r.content);
+    } else {
+      box.innerHTML = `<div class="ai-diag notice">${esc((r && r.notice) || '暂无可诊断内容')}</div>`;
+    }
+  } catch (e) {
+    box.innerHTML = `<div class="ai-diag notice">诊断失败：${esc(e.message)}</div>`;
+  } finally {
+    abState.diagLoading = false;
+    btn.disabled = false;
+    btn.innerHTML = `${ico('sparkles', 15)} AI 能力诊断`;
+  }
+}
+
+async function abilityCopyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast('已复制报告');
+  } catch {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); toast('已复制报告'); }
+    catch { toast('复制失败，请手动复制'); }
+    ta.remove();
+  }
 }
 
 // ---------- 我的收藏（5 大模块 tab + 子模块；点击重练 + 移除） ----------
@@ -5662,6 +5967,7 @@ api('/api/notes?limit=200&offset=0').then((data) => {
   refreshNoteButtons(); // 若在刷题页则刷新「添加笔记/查看笔记」按钮状态
 }).catch(() => {});
 if (initialView === 'ai') renderAiSettings();
+else if (initialView === 'ability') renderAbility();
 else renderHome();
 
 // ============ App 端自测钩子（调试用，正常使用不会触发）============

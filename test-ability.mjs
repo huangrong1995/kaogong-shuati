@@ -58,6 +58,12 @@ test('abilityMatrix：同 qid 双 subject 只计一次（subject 匹配关联）
   assert.equal(jt.total, 2);                                             // 两次作答各自入账，不因 qc 双行而翻倍
 });
 
+// ---------- radar-chart 前端模块（Task 7：防 API 漂移，纯模块加载断言） ----------
+test('radar-chart 模块可加载且暴露 drawRadar', async () => {
+  const m = await import('./public/lib/radar-chart.js');
+  assert.equal(typeof m.drawRadar, 'function');
+});
+
 // ---------- server /api/ability 冒烟（只读 GET，不写 practice.db） ----------
 import { spawn } from 'node:child_process';
 import net from 'node:net';
