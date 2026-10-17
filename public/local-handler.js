@@ -3,7 +3,8 @@
 //   query（题库查询） / records（做题记录·IndexedDB） / ai（AI 直调） / stats（聚合统计）
 // 返回结构与 server.mjs 完全对齐，app.js 零改动。
 
-import { checkAnswer } from './lib/local-queries.js';
+import { checkAnswer, formatDiagnosisPrompt, diagOptions, diagAnswerText, diagClean } from './lib/local-queries.js';
+import { classifyLeaf } from './lib/leaf-classifier.js';
 import { customQuestionHtml, parseImages } from './lib/custom-parser.js';
 
 /**
@@ -237,6 +238,55 @@ export function createLocalHandler({ query, records, store, ai }) {
     }
     if (route === 'POST /ai/explain') {
       const r = await ai.explain(body);
+      if (r.error) return { notice: r.error, content: null };
+      return r;
+    }
+    // 错题能力诊断（与 server /api/ai/diagnose 同构：能力矩阵 + 未达标模块错题 → 错题诊断顾问；不打缓存）
+    if (route === 'POST /ai/diagnose') {
+      const { target, exam, k } = body || {};
+      const records = await store.getAll('records');
+      const matrix = query.abilityMatrix(records, {
+        target: target == null ? 0.7 : Number(target),
+        exam: exam || 'guokao',
+        k: k == null ? 0.35 : Number(k),
+      });
+      // 未达标模块集合（与 server weakSet 同构）
+      const weakSet = new Set(matrix.groups.filter((g) => !g.met).map((g) => g.group));
+      // 错题行（与 server SQL WHERE 同构：is_correct=0 且未归档、行测/职测、sub_key 限六大模块；
+      // 本地记录无 archived 字段 → r.archived !== 1 恒真，等价 server archived = 0）
+      const XINGCE = new Set(['公务员·行测', '事业编·职测']);
+      const ABILITY_MODULES = matrix.groups.map((g) => g.group);
+      const weakRows = records
+        .filter((r) => r.is_correct === 0 && r.archived !== 1 && XINGCE.has(r.subject) && ABILITY_MODULES.includes(r.sub_key))
+        .filter((r) => weakSet.has(r.sub_key))
+        .sort((a, b) => (b.created_at || 0) - (a.created_at || 0)); // 最近优先（server ORDER BY r.id DESC）
+      // qc sub 关联（与 abilityMatrix 同款：qid|subject → sub）；题干/解析/选项/答案 从题库按 qid 批量取（分块 500）
+      const qcMap = query.qcMap();
+      const contentCache = query.questionsByQids(weakRows.map((r) => r.question_id));
+      // 每模块 ≤ 8 条、总 ≤ 40 条（同 server）；content 截 140 字、analysis 截 240 字
+      const perModCount = new Map();
+      const wrongItems = [];
+      for (const r of weakRows) {
+        if (wrongItems.length >= 40 || (perModCount.get(r.sub_key) || 0) >= 8) continue;
+        const q = contentCache.get(String(r.question_id));
+        if (!q) continue; // 题库已移除的历史题，跳过（同 server）
+        perModCount.set(r.sub_key, (perModCount.get(r.sub_key) || 0) + 1);
+        const qc = qcMap.get(`${r.question_id}|${r.subject}`);
+        const opts = diagOptions(q);
+        wrongItems.push({
+          group: r.sub_key,
+          sub: (qc && qc.sub) || '未细分',
+          leaf: classifyLeaf({ sub: qc && qc.sub, content: q.content, analysis: q.analysis }),
+          content: diagClean(q.content, 140),
+          myAnswer: diagAnswerText(r.selected, opts),
+          correctAnswer: diagAnswerText(q.answerIndex != null && q.answerIndex >= 0 ? q.answerIndex : q.answer, opts),
+          analysis: diagClean(q.analysis, 240),
+        });
+      }
+      if (!wrongItems.length) {
+        return { notice: '当前没有需要诊断的薄弱模块，先去刷题吧', content: null };
+      }
+      const r = await ai.diagnose(formatDiagnosisPrompt(matrix, wrongItems));
       if (r.error) return { notice: r.error, content: null };
       return r;
     }

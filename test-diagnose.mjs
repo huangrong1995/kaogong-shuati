@@ -13,7 +13,12 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { spawn } from 'node:child_process';
 import net from 'node:net';
-import { formatDiagnosisPrompt, diagOptions, diagAnswerText, diagClean } from './lib/local-queries.mjs';
+import { fileURLToPath } from 'node:url';
+import { DatabaseSync } from 'node:sqlite';
+import { formatDiagnosisPrompt, diagOptions, diagAnswerText, diagClean, createLocalApi, FENBI_TREE } from './lib/local-queries.mjs';
+import { createLocalHandler } from './public/local-handler.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 let tmpDb;
 // server 冒烟的独立 AI 配置库（与测试进程 before() 的 tmpDb 分开，避免写真实 ai-config.db）
@@ -147,4 +152,107 @@ test('server /api/ai/diagnose：无错题时提示暂无诊断（或降级）结
     const r = await res.json();
     if (r.content === null) assert.ok(typeof r.notice === 'string');
   });
+});
+
+// ---------- Task 5：本地/App 模式错题诊断接线（local-handler /ai/diagnose + ai-local.diagnose） ----------
+// 真实错题候选：question_categories 有 sub、questions 有题干/选项/数字答案，subject 属行测/职测
+function pickDiagRecord(eng) {
+  const MODS = FENBI_TREE.map((g) => g.group);
+  const cand = eng.get(`
+    SELECT qc.question_id qid, qc.subject subject, qc.category module,
+           q.answerIndex aIdx, q.options opts
+    FROM question_categories qc
+    JOIN questions q ON q.questionId = qc.question_id
+    WHERE qc.subject IN ('公务员·行测', '事业编·职测')
+      AND qc.sub != '' AND q.content != '' AND q.options != '[]' AND q.options IS NOT NULL
+      AND q.answerIndex IS NOT NULL AND q.answerIndex >= 0
+      AND qc.category IN (${MODS.map(() => '?').join(',')})
+    LIMIT 1
+  `, ...MODS);
+  if (!cand) throw new Error('tiku_app.db 缺少可诊断的错题候选');
+  const optArr = JSON.parse(cand.opts);
+  const wrongSel = optArr.length > 1 ? (cand.aIdx + 1) % optArr.length : 0;
+  return {
+    question_id: cand.qid,
+    subject: cand.subject,
+    sub_key: cand.module,
+    selected: [wrongSel],
+    is_correct: 0,
+    created_at: Date.now(),
+  };
+}
+
+test('local-handler /ai/diagnose：组装 payload 并转发给 ai.diagnose（真实题库行测错题）', async () => {
+  const db2 = new DatabaseSync('app-assets/tiku_app.db', { readOnly: true });
+  const eng = { get: (s, ...p) => db2.prepare(s).get(...p), all: (s, ...p) => db2.prepare(s).all(...p) };
+  const qapi = createLocalApi(eng, eng, {});
+  const rec = pickDiagRecord(eng);
+  let got = null;
+  const fakeAi = { diagnose: async (p) => { got = p; return { content: 'ok', model: 'm' }; } };
+  const handler = createLocalHandler({ query: qapi, records: null, store: { getAll: async () => [rec] }, ai: fakeAi });
+  const r = await handler('api/ai/diagnose', { method: 'POST', body: JSON.stringify({ target: 0.7, exam: 'guokao' }) });
+  assert.equal(r.content, 'ok');
+  assert.equal(r.model, 'm');
+  assert.ok(got && typeof got === 'string' && got.length > 0, 'payload 应已组装为诊断 prompt 文本');
+  assert.ok(got.includes(rec.sub_key), `prompt 应含模块名：${got.slice(0, 80)}`);
+  assert.ok(got.includes('我答') && got.includes('正确'), 'prompt 应含作答/正确渲染（与 server 同构）');
+});
+
+test('local-handler /ai/diagnose：无错题时返回 notice（与 server 同构）', async () => {
+  const db2 = new DatabaseSync('app-assets/tiku_app.db', { readOnly: true });
+  const eng = { get: (s, ...p) => db2.prepare(s).get(...p), all: (s, ...p) => db2.prepare(s).all(...p) };
+  const qapi = createLocalApi(eng, eng, {});
+  const handler = createLocalHandler({ query: qapi, records: null, store: { getAll: async () => [] }, ai: { diagnose: async () => ({ content: 'x' }) } });
+  const r = await handler('api/ai/diagnose', { method: 'POST', body: JSON.stringify({ target: 0.7, exam: 'guokao' }) });
+  assert.equal(r.content, null);
+  assert.ok(typeof r.notice === 'string' && r.notice.includes('薄弱模块'), `应提示先去刷题：${r.notice}`);
+});
+
+test('local-handler /ai/diagnose：fakeAi 未配置 key → 可读降级 notice', async () => {
+  const db2 = new DatabaseSync('app-assets/tiku_app.db', { readOnly: true });
+  const eng = { get: (s, ...p) => db2.prepare(s).get(...p), all: (s, ...p) => db2.prepare(s).all(...p) };
+  const qapi = createLocalApi(eng, eng, {});
+  const rec = pickDiagRecord(eng);
+  const fakeAi = { diagnose: async () => ({ error: '该 AI 未配置 api_key，请到 AI 设置页填写' }) };
+  const handler = createLocalHandler({ query: qapi, records: null, store: { getAll: async () => [rec] }, ai: fakeAi });
+  const r = await handler('api/ai/diagnose', { method: 'POST', body: JSON.stringify({ target: 0.7, exam: 'guokao' }) });
+  assert.equal(r.content, null);
+  assert.ok(typeof r.notice === 'string' && r.notice.includes('api_key'), `应提示未配置 key：${r.notice}`);
+});
+
+test('ai-local diagnose：找到 wrong-diagnosis 并转发 callChat（不打缓存）', async () => {
+  const storage = new Map();
+  const prevLS = global.localStorage;
+  const prevFetch = global.fetch;
+  global.localStorage = {
+    getItem: (k) => (storage.has(k) ? storage.get(k) : null),
+    setItem: (k, v) => storage.set(k, String(v)),
+    removeItem: (k) => storage.delete(k),
+  };
+  global.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes('ai-agents.default.json')) {
+      return { ok: true, status: 200, json: async () => JSON.parse(fs.readFileSync(path.join(__dirname, 'public/ai-agents.default.json'), 'utf8')) };
+    }
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+  try {
+    const calls = [];
+    const request = async (url, opts) => {
+      calls.push({ url, body: opts.body ? JSON.parse(opts.body) : null });
+      return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: 'DIAG_OK' } }] }), text: async () => '' };
+    };
+    const { createAiApi } = await import('./public/ai-local.js');
+    const ai = await createAiApi({ request, tiku: null, query: null });
+    const r = await ai.diagnose('测试诊断 payload');
+    assert.equal(r.content, 'DIAG_OK');
+    assert.equal(r.model, 'deepseek-v4-flash-free', '成功响应带 model（与 server 1:1）');
+    assert.equal(calls.length, 1, '诊断只调一次（绝不缓存）');
+    const msg = calls[0].body.messages;
+    assert.ok(msg.some((m) => m.role === 'system' && m.content.includes('诊断')), 'system_prompt 应为错题诊断顾问');
+    assert.equal(msg.find((m) => m.role === 'user').content, '测试诊断 payload');
+  } finally {
+    global.localStorage = prevLS;
+    global.fetch = prevFetch;
+  }
 });

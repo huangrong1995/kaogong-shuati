@@ -586,6 +586,15 @@ export async function createAiApi({ request, tiku, query, defaultsUrl = DEFAULT_
       return r;
     },
 
+    /** POST /api/ai/diagnose — 错题能力诊断（与 server /api/ai/diagnose 同构：成功带 content+model）。
+     *  绝不缓存：能力矩阵随刷题实时变化，缓存会窜读旧结果；未配 key / base_url 由 callChat 返回可读错误。 */
+    async diagnose(payload) {
+      const agent = loadAgents(defaults).find((a) => a.role === 'wrong-diagnosis');
+      if (!agent) return { error: '错题诊断顾问未启用，请到 AI 设置页配置' };
+      const r = await callChat(agent, String(payload ?? ''), request);
+      return r.content ? { content: r.content, model: agent.model } : r;
+    },
+
     /** POST /api/ai/ocr — 识图转写（image 为 dataURL）；与 server 同构：
      *  统一走合并后的「识图转写员」（image-reader），申论/综应手写作答与行测图形图表同用一模型；
      *  图片以多模态格式（image_url）真实发送给视觉模型 */
