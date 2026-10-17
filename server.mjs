@@ -16,7 +16,7 @@ import { listAgents, getAgent, updateAgent, getHistory, callAgent, initAiConfig,
 import { extractMaterialFromPdf } from './lib/pdf-ocr.mjs';
 import { FENBI_TREE, ESSAY_TREE, SHENLUN_TREE, ZONGYING_TREE } from './lib/fenbi-tree.mjs';
 import { mapChapterToNode } from './lib/xingce-chapter-map.mjs';
-import { computeTargetLines } from './lib/local-queries.mjs';
+import { computeTargetLines, formatDiagnosisPrompt } from './lib/local-queries.mjs';
 import { classifyLeaf } from './lib/leaf-classifier.mjs';
 import { customQuestionHtml, parseImages } from './public/lib/custom-parser.js';
 
@@ -222,6 +222,11 @@ const json = (res, code, data) => {
   res.end(JSON.stringify(data));
 };
 const err = (res, code, msg) => json(res, code, { error: msg });
+
+/** 0–1 clamp（/api/ability 与 /api/ai/diagnose 参数共用；缺省值兜底） */
+const clamp01 = (v, dflt) => { const n = Number(v); return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : dflt; };
+/** 数组分块（block=500）：规避本地 sql.js/Android NativeDB 变量上限 ~999（与 lib/local-queries.mjs abilityMatrix 分块策略一致） */
+const chunk = (arr, n) => { const out = []; for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n)); return out; };
 
 /** 多模态识图调用（OpenAI 兼容 image_url 格式，用于 GLM-4.1V-Thinking-Flash / GLM-4V-Flash 等视觉模型）
  *  含 429 限流自动重试（免费视觉模型常见访问量过大）
@@ -1347,6 +1352,121 @@ function groupCustomPracticeRows(rows, mapper) {
   return out;
 }
 
+// ---------- 能力矩阵（AI 能力诊断）：达标线 + 六大模块聚合（与 lib/local-queries.mjs abilityMatrix 1:1，双端同步维护） ----------
+// 只聚合 subject∈{公务员·行测,事业编·职测} 的客观题；按每次作答计；archived=1 不计；is_correct NULL（主观题）不计；
+// 正确率 = 非归档作答中 is_correct=1 占比；做题量不足（<5 次作答）→ enough=false（数据不足，不参与达标判定）。
+// 参数: target=目标正确率 0–1（缺省 0.7）；exam=考试名称透传（缺省 'guokao'）；k=差异化强度 0–1（缺省 0.35）。
+// 入参连接：pdb=practice.db（含 practice_records/question_categories，tiku. 前缀可用）；db=tiku.db（取 content/analysis，无 tiku. 前缀）。
+function buildAbility(pdb, db, target, exam, k) {
+  const modules = FENBI_TREE.map((g) => g.group);
+  const XINGCE = ['公务员·行测', '事业编·职测'];
+  // 1. 明细（与 local-queries.mjs abilityMatrix 过滤/归组 1:1）：LEFT JOIN qc（同 qid 按 subject 关联），qid 缺失的记录计入模块 total、不进 subs
+  const detail = pdb.prepare(`
+    SELECT r.question_id qid, r.sub_key mod_key, qc.sub sub, r.is_correct ok FROM practice_records r
+    LEFT JOIN question_categories qc ON qc.question_id = r.question_id AND qc.subject = r.subject
+    WHERE r.archived = 0 AND r.is_correct IS NOT NULL AND r.subject IN (?, ?) AND r.sub_key IN (${modules.map(() => '?').join(',')})
+  `).all(...XINGCE, ...modules);
+  // 2. 题干/解析批量（leaf 分类输入；每 qid 只查一次，缓存 Map；db 即 tiku.db，直接查 questions）
+  //    分块查询（block=500）：规避本地 sql.js/Android NativeDB 变量上限 ~999（与 lib/local-queries.mjs abilityMatrix 分块策略一致）
+  const contentCache = new Map();
+  const needQids = [...new Set(detail.filter((r) => r.sub != null).map((r) => r.qid))];
+  for (const qidChunk of chunk(needQids, 500)) {
+    for (const q of db.prepare(
+      `SELECT questionId, content, analysis FROM questions WHERE questionId IN (${qidChunk.map(() => '?').join(',')})`
+    ).all(...qidChunk)) contentCache.set(String(q.questionId), q);
+  }
+  // 归组：模块级 + 子模块级 + 细分叶子（classifyLeaf）
+  const modStat = new Map(modules.map((g) => [g, { total: 0, correct: 0, subs: new Map() }]));
+  for (const r of detail) {
+    const st = modStat.get(r.mod_key);
+    if (!st) continue;
+    st.total += 1;
+    if (r.ok === 1) st.correct += 1;
+    if (r.sub == null) continue; // 缺失 qc → 计入模块 total、不进 subs
+    let sub = st.subs.get(r.sub);
+    if (!sub) st.subs.set(r.sub, (sub = { total: 0, correct: 0, leaves: new Map() }));
+    sub.total += 1;
+    if (r.ok === 1) sub.correct += 1;
+    const q = contentCache.get(String(r.qid));
+    const leaf = classifyLeaf({ sub: r.sub, content: q?.content, analysis: q?.analysis });
+    let lf = sub.leaves.get(leaf);
+    if (!lf) sub.leaves.set(leaf, (lf = { total: 0, correct: 0 }));
+    lf.total += 1;
+    if (r.ok === 1) lf.correct += 1;
+  }
+  // 3. weights（与 local-queries.mjs abilityMatrix 1:1）：六大模块按近十年题量归一成 0–1；全 0 退化为均匀 1/6
+  const nOf = new Map(pdb.prepare(`
+    SELECT qc.category c, COUNT(DISTINCT qc.question_id) n FROM question_categories qc
+    JOIN tiku.questions q ON q.questionId = qc.question_id
+    JOIN tiku.papers p ON p.id = q.paperId
+    WHERE qc.subject IN (?, ?) AND substr(p.name, 1, 4) BETWEEN '${YEAR_FROM}' AND '${YEAR_TO}'
+    GROUP BY qc.category
+  `).all(...XINGCE).map((r) => [r.c, Number(r.n)]));
+  const nArr = modules.map((g) => nOf.get(g) || 0);
+  const nSum = nArr.reduce((a, b) => a + b, 0);
+  const wRaw = nSum > 0 ? nArr.map((n) => n / nSum) : modules.map(() => 1 / 6);
+  // 4. line = computeTargetLines(wRaw, target, k) ×100 取整；组装 JSON
+  const lines = computeTargetLines(wRaw, target, k).map((v) => Math.round(v * 100));
+  const groups = modules.map((g, i) => {
+    const st = modStat.get(g);
+    const subs = [...st.subs.entries()].map(([sub, s]) => ({
+      sub,
+      total: s.total,
+      correct: s.correct,
+      rate: s.total ? Math.round((s.correct / s.total) * 100) : 0,
+      leaves: [...s.leaves.entries()].map(([leaf, l]) => ({
+        leaf, total: l.total, correct: l.correct,
+        rate: l.total ? Math.round((l.correct / l.total) * 100) : 0,
+      })).sort((a, b) => b.total - a.total),
+    })).sort((a, b) => b.total - a.total);
+    const total = st.total;
+    const correct = st.correct;
+    const rate = total ? Math.round((correct / total) * 100) : 0;
+    const line = lines[i];
+    const enough = total >= 5;
+    return { group: g, total, correct, rate, line, enough, met: enough && rate >= line, subs };
+  });
+  return {
+    target, exam, k,
+    weights: modules.map((g, i) => ({ group: g, w: Math.round(wRaw[i] * 100) })),
+    groups,
+  };
+}
+
+// ---------- 错题能力诊断（/api/ai/diagnose）辅助：作答/正确答案 → 可读文本 ----------
+const DIAG_LETTERS = 'ABCDEFGH';
+// options 字段解析（JSON 数组；解析失败 → []）
+function diagOptions(q) {
+  try { const o = JSON.parse(q?.options || '[]'); return Array.isArray(o) ? o : []; } catch { return []; }
+}
+// val 为 JSON 索引（单: [n] 或裸数字；多: [n,n] 或 "n,n" / "[n,n]"）或 answerIndex/answer → 可读文本
+// 判断题（选项恰为 正确/错误）输出文字，其余输出选项文本（选项即字母时即字母），截 40 字
+function diagAnswerText(val, opts) {
+  let arr = [];
+  if (Array.isArray(val)) arr = val.map(Number);
+  else if (val == null || val === '') return '';
+  else if (typeof val === 'number') arr = [val];
+  else if (typeof val === 'string') {
+    const s = val.trim();
+    if (s.startsWith('[')) {
+      try { const p = JSON.parse(s); arr = (Array.isArray(p) ? p : [p]).map(Number); } catch { arr = []; }
+    } else arr = s.split(',').map((x) => Number(x.trim())).filter((x) => Number.isFinite(x));
+  }
+  arr = arr.filter((x) => Number.isFinite(x));
+  if (!arr.length) return '';
+  if (opts.length === 2 && String(opts[0]).trim() === '正确' && String(opts[1]).trim() === '错误') {
+    return arr.map((i) => (i === 1 ? '正确' : '错误')).join('、');
+  }
+  return arr.map((i) => {
+    const t = opts[i] == null ? '' : String(opts[i]).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    return t ? t.slice(0, 40) : (DIAG_LETTERS[i] ?? String(i));
+  }).join('、');
+}
+// 题干/解析去 HTML 后截断（content 140 字 / analysis 240 字）
+function diagClean(s, n) {
+  return String(s || '').replace(/<[^>]*>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim().slice(0, n);
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   const pathname = decodeURIComponent(url.pathname);
@@ -2166,87 +2286,15 @@ const server = http.createServer(async (req, res) => {
         }
         return json(res, 200, { ok: true, id: r.lastInsertRowid, removedFromWrong: correct === true });
       }
-      // 能力矩阵（AI 能力诊断）：达标线 + 六大模块聚合（与 lib/local-queries.mjs abilityMatrix 1:1，双端同步维护）
+      // 能力矩阵（AI 能力诊断）：达标线 + 六大模块聚合（SQL+组装见模块级 buildAbility，与 lib/local-queries.mjs abilityMatrix 1:1，双端同步维护）
       // 只聚合 subject∈{公务员·行测,事业编·职测} 的客观题；按每次作答计；archived=1 不计；is_correct NULL（主观题）不计；
       // 正确率 = 非归档作答中 is_correct=1 占比；做题量不足（<5 次作答）→ enough=false（数据不足，不参与达标判定）。
       // 参数: target=目标正确率 0–1（缺省 0.7）；exam=考试名称透传（缺省 'guokao'）；k=差异化强度 0–1（缺省 0.35）。
       if (pathname === '/api/ability' && req.method === 'GET') {
-        const clamp01 = (v, dflt) => { const n = Number(v); return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : dflt; };
         const target = url.searchParams.has('target') ? clamp01(url.searchParams.get('target'), 0.7) : 0.7;
         const exam = url.searchParams.get('exam') || 'guokao';
         const k = url.searchParams.has('k') ? clamp01(url.searchParams.get('k'), 0.35) : 0.35;
-        const modules = FENBI_TREE.map((g) => g.group);
-        const XINGCE = ['公务员·行测', '事业编·职测'];
-        // 1. 明细（与 local-queries.mjs abilityMatrix 过滤/归组 1:1）：LEFT JOIN qc（同 qid 按 subject 关联），qid 缺失的记录计入模块 total、不进 subs
-        const detail = pdb.prepare(`
-          SELECT r.question_id qid, r.sub_key mod_key, qc.sub sub, r.is_correct ok FROM practice_records r
-          LEFT JOIN question_categories qc ON qc.question_id = r.question_id AND qc.subject = r.subject
-          WHERE r.archived = 0 AND r.is_correct IS NOT NULL AND r.subject IN (?, ?) AND r.sub_key IN (${modules.map(() => '?').join(',')})
-        `).all(...XINGCE, ...modules);
-        // 2. 题干/解析批量（leaf 分类输入；每 qid 只查一次，缓存 Map；db 即 tiku.db，直接查 questions）
-        const contentCache = new Map();
-        const needQids = [...new Set(detail.filter((r) => r.sub != null).map((r) => r.qid))];
-        if (needQids.length) {
-          for (const q of db.prepare(
-            `SELECT questionId, content, analysis FROM questions WHERE questionId IN (${needQids.map(() => '?').join(',')})`
-          ).all(...needQids)) contentCache.set(String(q.questionId), q);
-        }
-        // 归组：模块级 + 子模块级 + 细分叶子（classifyLeaf）
-        const modStat = new Map(modules.map((g) => [g, { total: 0, correct: 0, subs: new Map() }]));
-        for (const r of detail) {
-          const st = modStat.get(r.mod_key);
-          if (!st) continue;
-          st.total += 1;
-          if (r.ok === 1) st.correct += 1;
-          if (r.sub == null) continue; // 缺失 qc → 计入模块 total、不进 subs
-          let sub = st.subs.get(r.sub);
-          if (!sub) st.subs.set(r.sub, (sub = { total: 0, correct: 0, leaves: new Map() }));
-          sub.total += 1;
-          if (r.ok === 1) sub.correct += 1;
-          const q = contentCache.get(String(r.qid));
-          const leaf = classifyLeaf({ sub: r.sub, content: q?.content, analysis: q?.analysis });
-          let lf = sub.leaves.get(leaf);
-          if (!lf) sub.leaves.set(leaf, (lf = { total: 0, correct: 0 }));
-          lf.total += 1;
-          if (r.ok === 1) lf.correct += 1;
-        }
-        // 3. weights（与 local-queries.mjs abilityMatrix 1:1）：六大模块按近十年题量归一成 0–1；全 0 退化为均匀 1/6
-        const nOf = new Map(pdb.prepare(`
-          SELECT qc.category c, COUNT(DISTINCT qc.question_id) n FROM question_categories qc
-          JOIN tiku.questions q ON q.questionId = qc.question_id
-          JOIN tiku.papers p ON p.id = q.paperId
-          WHERE qc.subject IN (?, ?) AND substr(p.name, 1, 4) BETWEEN '${YEAR_FROM}' AND '${YEAR_TO}'
-          GROUP BY qc.category
-        `).all(...XINGCE).map((r) => [r.c, Number(r.n)]));
-        const nArr = modules.map((g) => nOf.get(g) || 0);
-        const nSum = nArr.reduce((a, b) => a + b, 0);
-        const wRaw = nSum > 0 ? nArr.map((n) => n / nSum) : modules.map(() => 1 / 6);
-        // 4. line = computeTargetLines(wRaw, target, k) ×100 取整；组装 JSON
-        const lines = computeTargetLines(wRaw, target, k).map((v) => Math.round(v * 100));
-        const groups = modules.map((g, i) => {
-          const st = modStat.get(g);
-          const subs = [...st.subs.entries()].map(([sub, s]) => ({
-            sub,
-            total: s.total,
-            correct: s.correct,
-            rate: s.total ? Math.round((s.correct / s.total) * 100) : 0,
-            leaves: [...s.leaves.entries()].map(([leaf, l]) => ({
-              leaf, total: l.total, correct: l.correct,
-              rate: l.total ? Math.round((l.correct / l.total) * 100) : 0,
-            })).sort((a, b) => b.total - a.total),
-          })).sort((a, b) => b.total - a.total);
-          const total = st.total;
-          const correct = st.correct;
-          const rate = total ? Math.round((correct / total) * 100) : 0;
-          const line = lines[i];
-          const enough = total >= 5;
-          return { group: g, total, correct, rate, line, enough, met: enough && rate >= line, subs };
-        });
-        return json(res, 200, {
-          target, exam, k,
-          weights: modules.map((g, i) => ({ group: g, w: Math.round(wRaw[i] * 100) })),
-          groups,
-        });
+        return json(res, 200, buildAbility(pdb, db, target, exam, k));
       }
       // 统计（学习进度 AI 的数据源）：总数/正确率/按章节/近7天
       // 参数: subject=真实科目(经 question_id 关联 tiku 判定); days=30|180|365 或 from+to(YYYY-MM-DD); 缺省不过滤
@@ -2550,6 +2598,70 @@ const server = http.createServer(async (req, res) => {
         } catch (e) {
           return err(res, 400, `拉取失败：${e.message}`);
         }
+      }
+      // 错题能力诊断（AI）：能力矩阵 + 未达标模块错题 → 错题诊断顾问（wrong-diagnosis）
+      // 参数: body = { target, exam, k }（与 /api/ability 同语义，可省略走缺省）
+      // 返回: 200 { content, model }；未配 key / 无可诊断模块 / callAgent 失败 → { notice, content: null }
+      if (pathname === '/api/ai/diagnose' && req.method === 'POST') {
+        let body = '';
+        for await (const chunk of req) body += chunk;
+        const { target, exam, k } = JSON.parse(body || '{}');
+        const agent = getAgent('wrong-diagnosis');
+        if (!agent || !agent.api_key) {
+          return json(res, 200, {
+            notice: '错题诊断顾问 AI 尚未配置 api_key，请到「AI 设置」页面填写后重试。',
+            content: null,
+          });
+        }
+        const matrix = buildAbility(pdb, db,
+          target == null ? 0.7 : clamp01(target, 0.7),
+          exam || 'guokao',
+          k == null ? 0.35 : clamp01(k, 0.35));
+        // 错题（is_correct=0 且未归档；LEFT JOIN qc 同 buildAbility 明细，得 sub/category；sub_key 限六大模块）
+        const modules = FENBI_TREE.map((g) => g.group);
+        const XINGCE = ['公务员·行测', '事业编·职测'];
+        const rows = pdb.prepare(`
+          SELECT r.question_id qid, r.subject subject, r.selected selected, r.sub_key mod_key, qc.sub sub
+          FROM practice_records r
+          LEFT JOIN question_categories qc ON qc.question_id = r.question_id AND qc.subject = r.subject
+          WHERE r.is_correct = 0 AND r.archived = 0 AND r.subject IN (?, ?) AND r.sub_key IN (${modules.map(() => '?').join(',')})
+          ORDER BY r.id DESC
+        `).all(...XINGCE, ...modules);
+        // 只取未达标模块的错题：每模块 ≤ 8 条、总 ≤ 40 条；content 截 140 字、analysis 截 240 字
+        const weakSet = new Set(matrix.groups.filter((g) => !g.met).map((g) => g.group));
+        const needQids = [...new Set(rows.map((r) => r.qid))];
+        // 题干/解析批量（分块 500，同 buildAbility 策略）
+        const contentCache = new Map();
+        for (const qidChunk of chunk(needQids, 500)) {
+          for (const q of db.prepare(
+            `SELECT questionId, content, analysis, options, answer, answerIndex FROM questions WHERE questionId IN (${qidChunk.map(() => '?').join(',')})`
+          ).all(...qidChunk)) contentCache.set(String(q.questionId), q);
+        }
+        const perModCount = new Map();
+        const wrongItems = [];
+        for (const r of rows) {
+          if (!weakSet.has(r.mod_key)) continue;
+          if (wrongItems.length >= 40 || (perModCount.get(r.mod_key) || 0) >= 8) continue;
+          const q = contentCache.get(String(r.qid));
+          if (!q) continue; // 题库已移除的历史题，跳过
+          perModCount.set(r.mod_key, (perModCount.get(r.mod_key) || 0) + 1);
+          const opts = diagOptions(q);
+          wrongItems.push({
+            group: r.mod_key,
+            sub: r.sub || '未细分',
+            leaf: classifyLeaf({ sub: r.sub, content: q.content, analysis: q.analysis }),
+            content: diagClean(q.content, 140),
+            myAnswer: diagAnswerText(r.selected, opts),
+            correctAnswer: diagAnswerText(q.answerIndex != null && q.answerIndex >= 0 ? q.answerIndex : q.answer, opts),
+            analysis: diagClean(q.analysis, 240),
+          });
+        }
+        if (!wrongItems.length) {
+          return json(res, 200, { notice: '当前没有需要诊断的薄弱模块，先去刷题吧', content: null });
+        }
+        const r = await callAgent(agent, formatDiagnosisPrompt(matrix, wrongItems));
+        if (r.error) return json(res, 200, { notice: r.error, content: null });
+        return json(res, 200, { content: r.content, model: agent.model });
       }
       // 行测 AI 解析（真实调用行测解析 AI，按题目 + 作答情况生成解析）
       if (pathname === '/api/ai/explain' && req.method === 'POST') {

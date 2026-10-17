@@ -226,6 +226,44 @@ export function computeTargetLines(weights, target, k = 0.35) {
   return wArr.map((w) => clamp(target + k * (w - wBar)));
 }
 
+/** 数组分块（block=500）：规避本地 sql.js / Android NativeDB 变量上限 ~999（与 server buildAbility 分块策略一致） */
+function chunk(arr, n) {
+  const out = [];
+  for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n));
+  return out;
+}
+
+/** 能力诊断提示词（纯函数，双端共用）：矩阵缩略 + 未达标模块错题清单 → 错题诊断顾问输入
+ *  matrix 为 buildAbility / abilityMatrix 返回（groups 需含 group/rate/line/met）；
+ *  wrongItems 为 [{ group, sub, leaf, content, myAnswer, correctAnswer, analysis }]，按模块分组列出。
+ *  server /api/ai/diagnose 与本地 diagnose 共用。 */
+export function formatDiagnosisPrompt(matrix = {}, wrongItems = []) {
+  const groups = Array.isArray(matrix.groups) ? matrix.groups : [];
+  const targetPct = Math.round((Number(matrix.target) || 0.7) * 100);
+  const out = ['# 能力矩阵', `目标正确率 ${targetPct}%（${matrix.exam || 'guokao'}）`];
+  for (const g of groups) {
+    out.push(`- ${g.group}：正确率 ${g.rate}%（达标线 ${g.line}%，${g.met ? '达标' : '未达标'}）`);
+  }
+  const byGroup = new Map();
+  for (const w of wrongItems) {
+    const g = w.group || '未分类';
+    if (!byGroup.has(g)) byGroup.set(g, []);
+    byGroup.get(g).push(w);
+  }
+  out.push('', '# 未达标模块错题');
+  if (!byGroup.size) {
+    out.push('（无错题）');
+  } else {
+    for (const [g, items] of byGroup) {
+      out.push(`## ${g}`);
+      for (const w of items) {
+        out.push(`- [${w.group}·${w.sub}·${w.leaf}] ${w.content} … 我答:${w.myAnswer} 正确:${w.correctAnswer} ${w.analysis}`);
+      }
+    }
+  }
+  return out.join('\n');
+}
+
 /** 判分：选项索引 → 是否正确（与 server checkAnswer 相同；兼容已解析的 options 数组） */
 export function checkAnswer(q, selected) {
   const opts = Array.isArray(q.options) ? q.options : JSON.parse(q.options || '[]');
@@ -1075,13 +1113,15 @@ export function createLocalApi(tiku, practice, stats = {}) {
       const modStat = new Map(ABILITY_MODULES.map((g) => [g, { total: 0, correct: 0, subs: new Map() }]));
       const needQids = new Set();
       for (const r of rows) if (qcMap.has(`${r.question_id}|${r.subject}`)) needQids.add(r.question_id);
+      // 分块查询（block=500）：规避本地 sql.js / Android NativeDB 变量上限 ~999（与 server buildAbility 分块策略一致）
       const contentCache = new Map();
       if (needQids.size) {
-        const qidArr = [...needQids];
-        for (const q of tiku.all(
-          `SELECT questionId, content, analysis FROM questions WHERE questionId IN (${qidArr.map(() => '?').join(',')})`,
-          ...qidArr
-        )) contentCache.set(String(q.questionId), q);
+        for (const qidChunk of chunk([...needQids], 500)) {
+          for (const q of tiku.all(
+            `SELECT questionId, content, analysis FROM questions WHERE questionId IN (${qidChunk.map(() => '?').join(',')})`,
+            ...qidChunk
+          )) contentCache.set(String(q.questionId), q);
+        }
       }
       for (const r of rows) {
         const st = modStat.get(r.sub_key);
