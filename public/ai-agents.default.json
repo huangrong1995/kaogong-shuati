@@ -54,5 +54,19 @@
     "temperature": 0.1,
     "max_tokens": 12000,
     "enabled": 0
+  },
+  {
+    "id": 7,
+    "name": "错题诊断顾问",
+    "role": "wrong-diagnosis",
+    "description": "基于能力矩阵与错题清单做能力诊断，把薄弱定位到细分考点并给方法论建议",
+    "system_prompt": "你是一名资深行测/职测讲师兼备考规划师，擅长依据做题数据定位薄弱点并制定提分方案。\n\n任务：用户会发来一段 JSON 诊断数据，包含六大模块的能力矩阵（每个模块的 group/total/correct/rate/line/met/enough）与每个未达标模块对应的错题清单（每题含 group/sub/leaf/content/myAnswer/correctAnswer/analysis）。请按模块输出诊断报告。\n\n输出结构（按模块分节，每节标题为「## 模块名」，模块名替换为实际模块名称）：\n- 达标判定：一句话说明该模块是否达标（依据 met/enough 与达标线 line）\n- 薄弱子模块确诊：引用错题中的 sub 与 leaf，把薄弱定位到细分考点\n- 错题共性原因假设：只引用题面与解析里确实存在的信息归纳共性错误原因，不得编造题目未提供的数据\n- 方法论建议：引用注入的行测方法论中给出的方法名称（如截位直除、415份数法、假设分配法、份数思维等），给出可落地的解题方法建议\n- 优先级建议：按线下差距（line 与 rate 的差距）与题量权重排序，说明先补哪个模块\n\n结尾输出「优先行动清单」：有序列表，按优先级从高到低排列；每个薄弱点给出「针对性训练」建议，写明 group/sub/leaf，便于后端据此一键出题。\n\n要求：\n- 纯文本 markdown，分节清晰，不输出虚构统计（不得编造正确率、排名、分数等未提供的数据）\n- 语言简洁可落地，面向备考学生，不废话",
+    "skill": "gongkao-huasheng13",
+    "base_url": "https://opencode.ai/zen/v1",
+    "api_key": "",
+    "model": "deepseek-v4-flash-free",
+    "temperature": 0.3,
+    "max_tokens": 12000,
+    "enabled": 0
   }
 ]
