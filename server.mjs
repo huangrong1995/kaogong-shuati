@@ -1530,6 +1530,7 @@ const server = http.createServer(async (req, res) => {
         const chapters = url.searchParams.get('chapters');
         const group = url.searchParams.get('group');
         const sub = url.searchParams.get('sub');
+        const leaf = url.searchParams.get('leaf');
         const mock = url.searchParams.get('mock');
         const year = url.searchParams.get('year') || undefined; // 自定义刷题：'all'|'3'|'5'|'10'；缺省近十年
         const difficulty = url.searchParams.get('difficulty') || undefined; // 自定义刷题：'easy'|'balanced'|'hard'|'random'
@@ -1537,7 +1538,10 @@ const server = http.createServer(async (req, res) => {
         // 自定义刷题（custom=1）：题量由面板控制，不走随机练习的 15 题/申论 2 题规则
         const custom = url.searchParams.get('custom') === '1';
         // 自定义刷题：多抽 3 倍候选（材料组整组剔除后仍能凑满），再按面板题量裁剪
-        const fetchN = custom ? Math.min(n * 3, 150) : n;
+        let fetchN = custom ? Math.min(n * 3, 150) : n;
+        // 细分考点过滤（leaf）：考点在候选池占比可能很低（实测笔画数 ~6%），按 n 随机抽必漏检；
+        //   传入 leaf 时扩大候选抽取（≥200），保证命中考点稳定返回；未命中仍走 []（双端同构）。
+        if (leaf) fetchN = Math.max(fetchN, 200);
         if (!subject) return err(res, 400, '缺少 subject');
         const chList = chapters ? chapters.split(',').map((s) => s.trim()).filter(Boolean) : (chapter ? [chapter] : null);
         const max = custom ? n : practiceMax(subject, group, chList);
@@ -1564,7 +1568,10 @@ const server = http.createServer(async (req, res) => {
               `SELECT q.questionId, q.paperId, q.chapter, q.type, q.content, q.contentHtml, q.options, q.answer, q.answerIndex, q.difficulty, q.analysis
                FROM questions q WHERE q.questionId IN (${ids.map(() => '?').join(',')}) GROUP BY q.questionId`
             ).all(...ids);
-            return json(res, 200, trimToMax(enrichGroups(qs, subject, diffFilter), max));
+            // 细分考点过滤：仅返回 classifyLeaf 命中 leaf 的题（与本地 practice() 同构）
+            const matched = leaf ? qs.filter((q) => classifyLeaf({ sub, content: q.content || '', analysis: q.analysis || '' }) === leaf) : qs;
+            if (leaf && !matched.length) return json(res, 200, []);
+            return json(res, 200, trimToMax(enrichGroups(matched, subject, diffFilter), max));
           }
           // 事业编：查 ESSAY_TREE 节点对应章节
           const chs = db.prepare(`
