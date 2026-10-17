@@ -16,6 +16,8 @@ import { listAgents, getAgent, updateAgent, getHistory, callAgent, initAiConfig,
 import { extractMaterialFromPdf } from './lib/pdf-ocr.mjs';
 import { FENBI_TREE, ESSAY_TREE, SHENLUN_TREE, ZONGYING_TREE } from './lib/fenbi-tree.mjs';
 import { mapChapterToNode } from './lib/xingce-chapter-map.mjs';
+import { computeTargetLines } from './lib/local-queries.mjs';
+import { classifyLeaf } from './lib/leaf-classifier.mjs';
 import { customQuestionHtml, parseImages } from './public/lib/custom-parser.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -2163,6 +2165,88 @@ const server = http.createServer(async (req, res) => {
           }
         }
         return json(res, 200, { ok: true, id: r.lastInsertRowid, removedFromWrong: correct === true });
+      }
+      // 能力矩阵（AI 能力诊断）：达标线 + 六大模块聚合（与 lib/local-queries.mjs abilityMatrix 1:1，双端同步维护）
+      // 只聚合 subject∈{公务员·行测,事业编·职测} 的客观题；按每次作答计；archived=1 不计；is_correct NULL（主观题）不计；
+      // 正确率 = 非归档作答中 is_correct=1 占比；做题量不足（<5 次作答）→ enough=false（数据不足，不参与达标判定）。
+      // 参数: target=目标正确率 0–1（缺省 0.7）；exam=考试名称透传（缺省 'guokao'）；k=差异化强度 0–1（缺省 0.35）。
+      if (pathname === '/api/ability' && req.method === 'GET') {
+        const clamp01 = (v, dflt) => { const n = Number(v); return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : dflt; };
+        const target = url.searchParams.has('target') ? clamp01(url.searchParams.get('target'), 0.7) : 0.7;
+        const exam = url.searchParams.get('exam') || 'guokao';
+        const k = url.searchParams.has('k') ? clamp01(url.searchParams.get('k'), 0.35) : 0.35;
+        const modules = FENBI_TREE.map((g) => g.group);
+        const XINGCE = ['公务员·行测', '事业编·职测'];
+        // 1. 明细（与 local-queries.mjs abilityMatrix 过滤/归组 1:1）：LEFT JOIN qc（同 qid 按 subject 关联），qid 缺失的记录计入模块 total、不进 subs
+        const detail = pdb.prepare(`
+          SELECT r.question_id qid, r.sub_key mod_key, qc.sub sub, r.is_correct ok FROM practice_records r
+          LEFT JOIN question_categories qc ON qc.question_id = r.question_id AND qc.subject = r.subject
+          WHERE r.archived = 0 AND r.is_correct IS NOT NULL AND r.subject IN (?, ?) AND r.sub_key IN (${modules.map(() => '?').join(',')})
+        `).all(...XINGCE, ...modules);
+        // 2. 题干/解析批量（leaf 分类输入；每 qid 只查一次，缓存 Map；db 即 tiku.db，直接查 questions）
+        const contentCache = new Map();
+        const needQids = [...new Set(detail.filter((r) => r.sub != null).map((r) => r.qid))];
+        if (needQids.length) {
+          for (const q of db.prepare(
+            `SELECT questionId, content, analysis FROM questions WHERE questionId IN (${needQids.map(() => '?').join(',')})`
+          ).all(...needQids)) contentCache.set(String(q.questionId), q);
+        }
+        // 归组：模块级 + 子模块级 + 细分叶子（classifyLeaf）
+        const modStat = new Map(modules.map((g) => [g, { total: 0, correct: 0, subs: new Map() }]));
+        for (const r of detail) {
+          const st = modStat.get(r.mod_key);
+          if (!st) continue;
+          st.total += 1;
+          if (r.ok === 1) st.correct += 1;
+          if (r.sub == null) continue; // 缺失 qc → 计入模块 total、不进 subs
+          let sub = st.subs.get(r.sub);
+          if (!sub) st.subs.set(r.sub, (sub = { total: 0, correct: 0, leaves: new Map() }));
+          sub.total += 1;
+          if (r.ok === 1) sub.correct += 1;
+          const q = contentCache.get(String(r.qid));
+          const leaf = classifyLeaf({ sub: r.sub, content: q?.content, analysis: q?.analysis });
+          let lf = sub.leaves.get(leaf);
+          if (!lf) sub.leaves.set(leaf, (lf = { total: 0, correct: 0 }));
+          lf.total += 1;
+          if (r.ok === 1) lf.correct += 1;
+        }
+        // 3. weights（与 local-queries.mjs abilityMatrix 1:1）：六大模块按近十年题量归一成 0–1；全 0 退化为均匀 1/6
+        const nOf = new Map(pdb.prepare(`
+          SELECT qc.category c, COUNT(DISTINCT qc.question_id) n FROM question_categories qc
+          JOIN tiku.questions q ON q.questionId = qc.question_id
+          JOIN tiku.papers p ON p.id = q.paperId
+          WHERE qc.subject IN (?, ?) AND substr(p.name, 1, 4) BETWEEN '${YEAR_FROM}' AND '${YEAR_TO}'
+          GROUP BY qc.category
+        `).all(...XINGCE).map((r) => [r.c, Number(r.n)]));
+        const nArr = modules.map((g) => nOf.get(g) || 0);
+        const nSum = nArr.reduce((a, b) => a + b, 0);
+        const wRaw = nSum > 0 ? nArr.map((n) => n / nSum) : modules.map(() => 1 / 6);
+        // 4. line = computeTargetLines(wRaw, target, k) ×100 取整；组装 JSON
+        const lines = computeTargetLines(wRaw, target, k).map((v) => Math.round(v * 100));
+        const groups = modules.map((g, i) => {
+          const st = modStat.get(g);
+          const subs = [...st.subs.entries()].map(([sub, s]) => ({
+            sub,
+            total: s.total,
+            correct: s.correct,
+            rate: s.total ? Math.round((s.correct / s.total) * 100) : 0,
+            leaves: [...s.leaves.entries()].map(([leaf, l]) => ({
+              leaf, total: l.total, correct: l.correct,
+              rate: l.total ? Math.round((l.correct / l.total) * 100) : 0,
+            })).sort((a, b) => b.total - a.total),
+          })).sort((a, b) => b.total - a.total);
+          const total = st.total;
+          const correct = st.correct;
+          const rate = total ? Math.round((correct / total) * 100) : 0;
+          const line = lines[i];
+          const enough = total >= 5;
+          return { group: g, total, correct, rate, line, enough, met: enough && rate >= line, subs };
+        });
+        return json(res, 200, {
+          target, exam, k,
+          weights: modules.map((g, i) => ({ group: g, w: Math.round(wRaw[i] * 100) })),
+          groups,
+        });
       }
       // 统计（学习进度 AI 的数据源）：总数/正确率/按章节/近7天
       // 参数: subject=真实科目(经 question_id 关联 tiku 判定); days=30|180|365 或 from+to(YYYY-MM-DD); 缺省不过滤

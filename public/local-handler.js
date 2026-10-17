@@ -189,6 +189,8 @@ export function createLocalHandler({ query, records, store, ai }) {
       });
     }
     if (route === 'GET /records/recent') return records.recent({ limit: Number(qs.get('limit') || 20) });
+    // 能力矩阵（AI 能力诊断）：与 server /api/ability 同构，消费本地记录 + tiku（abilityMatrix 挂在 createLocalApi 返回值上）
+    if (route === 'GET /ability') return query.abilityMatrix(await store.getAll('records'), { target: Number(qs.get('target') || 0.7), exam: qs.get('exam') || 'guokao', k: qs.get('k') != null ? Number(qs.get('k')) : 0.35 });
     // 来源分组总览（5 大模块 + 未分类）
     if (route === 'GET /records/wrong/groups') return records.groups('wrong');
     if (route === 'GET /favorites/groups') return records.groups('favorites');
