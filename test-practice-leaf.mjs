@@ -23,6 +23,11 @@ test('本地 practice(leaf)：未命中返回空数组不抛错', () => {
   const qs = api.practice('公务员·行测', { group: '判断推理', sub: '图形推理', leaf: '不存在的考点', n: 8 });
   assert.deepEqual(qs, []);
 });
+// Important #1 回归：模块级「针对性训练」缺省 sub → 两端都应视为 '全部' 而非 [] / 抛错
+test('本地 practice(group 无 sub)：缺省 sub 视为全部，返回组题不抛错', () => {
+  const qs = api.practice('公务员·行测', { group: '判断推理', n: 8 });
+  assert.ok(qs.length >= 1, `判断推理（无 sub）至少 1 题（实际 ${qs.length}）`);
+});
 
 // ---------- server /api/practice leaf 冒烟（只读 GET，不写 practice.db） ----------
 import { spawn } from 'node:child_process';
@@ -86,5 +91,16 @@ test('server /api/practice?leaf=不存在的考点：返回空数组', async () 
     assert.equal(res.status, 200);
     const qs = await res.json();
     assert.deepEqual(qs, []);
+  });
+});
+
+test('server /api/practice 无 sub 参数：缺省视为 全部，返回组题', async () => {
+  await withServer(async (port) => {
+    const res = await fetch(`http://localhost:${port}/api/practice?${Q({
+      subject: '公务员·行测', group: '判断推理', n: 5,
+    })}`);
+    assert.equal(res.status, 200);
+    const qs = await res.json();
+    assert.ok(Array.isArray(qs) && qs.length >= 1, `server 判断推理（无 sub）至少 1 题（实际 ${qs.length}）`);
   });
 });

@@ -1529,7 +1529,7 @@ const server = http.createServer(async (req, res) => {
         const chapter = url.searchParams.get('chapter');
         const chapters = url.searchParams.get('chapters');
         const group = url.searchParams.get('group');
-        const sub = url.searchParams.get('sub');
+        const sub = url.searchParams.get('sub') || '全部'; // 缺省视为 '全部'：模块级训练不分子模块（与 app.js abilityTrain/既有调用方契约一致）
         const leaf = url.searchParams.get('leaf');
         const mock = url.searchParams.get('mock');
         const year = url.searchParams.get('year') || undefined; // 自定义刷题：'all'|'3'|'5'|'10'；缺省近十年

@@ -4741,7 +4741,10 @@ function drawAbilityRadar(canvas, m) {
   const values = m.groups.map((g) => g.rate / 100);
   const lineValues = m.groups.map((g) => g.line / 100);
   const met = m.groups.map((g) => g.met);
-  const paint = () => radarDraw().then((drawRadar) => drawRadar(canvas, { labels, values, lineValues, met })).catch(() => {});
+  const paint = () => {
+    if (store.state.view !== 'ability') return; // 已离开能力视图：不再重绘脱离文档的 canvas
+    radarDraw().then((drawRadar) => drawRadar(canvas, { labels, values, lineValues, met })).catch(() => {});
+  };
   paint();
   if (abResizeH) window.removeEventListener('resize', abResizeH);
   abResizeH = paint;
@@ -4761,6 +4764,7 @@ function bindAbilitySettings(view, m) {
   refreshConvert();
 
   const reload = () => {
+    if (store.state.view !== 'ability') return; // 已离开能力视图：取消防抖重绘（350ms 后不再在当前视图上重绘能力页）
     saveAbilitySettings(s);
     renderAbility(true);
   };
@@ -4849,7 +4853,7 @@ function abilityLeafRow(g, sg, l) {
 /** 针对性训练：按大模块/子模块/细分考点出 10 题（leaf 必带，未命中提示）；进入标准练习并压来源层 */
 async function abilityTrain(group, sub, leaf) {
   let url = `/api/practice?subject=${encodeURIComponent('公务员·行测')}&group=${encodeURIComponent(group)}&n=10`;
-  if (sub) url += `&sub=${encodeURIComponent(sub)}`;
+  url += `&sub=${encodeURIComponent(sub || '全部')}`; // 模块级训练不分子模块 → 缺省 '全部'（与 server /api/practice 缺省一致）
   if (leaf) url += `&leaf=${encodeURIComponent(leaf)}`;
   let qs = [];
   try { qs = await api(url); } catch (e) { toast('训练出题失败：' + e.message); return; }
