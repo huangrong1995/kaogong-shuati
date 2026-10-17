@@ -16,7 +16,7 @@ import { listAgents, getAgent, updateAgent, getHistory, callAgent, initAiConfig,
 import { extractMaterialFromPdf } from './lib/pdf-ocr.mjs';
 import { FENBI_TREE, ESSAY_TREE, SHENLUN_TREE, ZONGYING_TREE } from './lib/fenbi-tree.mjs';
 import { mapChapterToNode } from './lib/xingce-chapter-map.mjs';
-import { computeTargetLines, formatDiagnosisPrompt } from './lib/local-queries.mjs';
+import { computeTargetLines, formatDiagnosisPrompt, diagOptions, diagAnswerText, diagClean } from './lib/local-queries.mjs';
 import { classifyLeaf } from './lib/leaf-classifier.mjs';
 import { customQuestionHtml, parseImages } from './public/lib/custom-parser.js';
 
@@ -1433,40 +1433,6 @@ function buildAbility(pdb, db, target, exam, k) {
   };
 }
 
-// ---------- 错题能力诊断（/api/ai/diagnose）辅助：作答/正确答案 → 可读文本 ----------
-const DIAG_LETTERS = 'ABCDEFGH';
-// options 字段解析（JSON 数组；解析失败 → []）
-function diagOptions(q) {
-  try { const o = JSON.parse(q?.options || '[]'); return Array.isArray(o) ? o : []; } catch { return []; }
-}
-// val 为 JSON 索引（单: [n] 或裸数字；多: [n,n] 或 "n,n" / "[n,n]"）或 answerIndex/answer → 可读文本
-// 判断题（选项恰为 正确/错误）输出文字，其余输出选项文本（选项即字母时即字母），截 40 字
-function diagAnswerText(val, opts) {
-  let arr = [];
-  if (Array.isArray(val)) arr = val.map(Number);
-  else if (val == null || val === '') return '';
-  else if (typeof val === 'number') arr = [val];
-  else if (typeof val === 'string') {
-    const s = val.trim();
-    if (s.startsWith('[')) {
-      try { const p = JSON.parse(s); arr = (Array.isArray(p) ? p : [p]).map(Number); } catch { arr = []; }
-    } else arr = s.split(',').map((x) => Number(x.trim())).filter((x) => Number.isFinite(x));
-  }
-  arr = arr.filter((x) => Number.isFinite(x));
-  if (!arr.length) return '';
-  if (opts.length === 2 && String(opts[0]).trim() === '正确' && String(opts[1]).trim() === '错误') {
-    return arr.map((i) => (i === 1 ? '正确' : '错误')).join('、');
-  }
-  return arr.map((i) => {
-    const t = opts[i] == null ? '' : String(opts[i]).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-    return t ? t.slice(0, 40) : (DIAG_LETTERS[i] ?? String(i));
-  }).join('、');
-}
-// 题干/解析去 HTML 后截断（content 140 字 / analysis 240 字）
-function diagClean(s, n) {
-  return String(s || '').replace(/<[^>]*>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim().slice(0, n);
-}
-
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   const pathname = decodeURIComponent(url.pathname);
@@ -2629,7 +2595,8 @@ const server = http.createServer(async (req, res) => {
         `).all(...XINGCE, ...modules);
         // 只取未达标模块的错题：每模块 ≤ 8 条、总 ≤ 40 条；content 截 140 字、analysis 截 240 字
         const weakSet = new Set(matrix.groups.filter((g) => !g.met).map((g) => g.group));
-        const needQids = [...new Set(rows.map((r) => r.qid))];
+        const weakRows = rows.filter((r) => weakSet.has(r.mod_key));
+        const needQids = [...new Set(weakRows.map((r) => r.qid))];
         // 题干/解析批量（分块 500，同 buildAbility 策略）
         const contentCache = new Map();
         for (const qidChunk of chunk(needQids, 500)) {
@@ -2639,8 +2606,7 @@ const server = http.createServer(async (req, res) => {
         }
         const perModCount = new Map();
         const wrongItems = [];
-        for (const r of rows) {
-          if (!weakSet.has(r.mod_key)) continue;
+        for (const r of weakRows) {
           if (wrongItems.length >= 40 || (perModCount.get(r.mod_key) || 0) >= 8) continue;
           const q = contentCache.get(String(r.qid));
           if (!q) continue; // 题库已移除的历史题，跳过

@@ -242,7 +242,7 @@ export function formatDiagnosisPrompt(matrix = {}, wrongItems = []) {
   const targetPct = Math.round((Number(matrix.target) || 0.7) * 100);
   const out = ['# 能力矩阵', `目标正确率 ${targetPct}%（${matrix.exam || 'guokao'}）`];
   for (const g of groups) {
-    out.push(`- ${g.group}：正确率 ${g.rate}%（达标线 ${g.line}%，${g.met ? '达标' : '未达标'}）`);
+    out.push(`- ${g.group}：正确率 ${g.rate}%（达标线 ${g.line}%，样本 ${g.total} 题，${g.met ? '达标' : '未达标'}）`);
   }
   const byGroup = new Map();
   for (const w of wrongItems) {
@@ -262,6 +262,49 @@ export function formatDiagnosisPrompt(matrix = {}, wrongItems = []) {
     }
   }
   return out.join('\n');
+}
+
+// ---------- 能力诊断渲染辅助（/api/ai/diagnose 与本地 diagnose 共用；双端同源） ----------
+/** 选项字母表（diagAnswerText 兜底；内部常量不导出） */
+const DIAG_LETTERS = 'ABCDEFGH';
+
+/** options 字段解析（JSON 数组；解析失败 → []） */
+export function diagOptions(q) {
+  try { const o = JSON.parse(q?.options || '[]'); return Array.isArray(o) ? o : []; } catch { return []; }
+}
+
+/** 作答/正确答案 → 可读文本（判分渲染约定：判断题 0=正确、1=错误）
+ *  val 为 JSON 索引（单:[n] 或裸数字；多:[n,n] 或 "n,n" / "[n,n]"）或 answerIndex/answer；
+ *  opts 为选项文本数组。判断依据（宽容匹配 trim 后文本）：
+ *    - 选项恰为 ['正确','错误'] → 判断题；
+ *    - 空 options 且取值全 ∈{0,1}（内置 tiku.db 判断题 options='[]'）→ 判断题；
+ *  判断题输出「正确/错误」，其余输出选项文本（选项即字母时即字母），截 40 字。 */
+export function diagAnswerText(val, opts) {
+  let arr = [];
+  if (Array.isArray(val)) arr = val.map(Number);
+  else if (val == null || val === '') return '';
+  else if (typeof val === 'number') arr = [val];
+  else if (typeof val === 'string') {
+    const s = val.trim();
+    if (s.startsWith('[')) {
+      try { const p = JSON.parse(s); arr = (Array.isArray(p) ? p : [p]).map(Number); } catch { arr = []; }
+    } else arr = s.split(',').map((x) => Number(x.trim())).filter((x) => Number.isFinite(x));
+  }
+  arr = arr.filter((x) => Number.isFinite(x));
+  if (!arr.length) return '';
+  const o0 = opts[0] == null ? '' : String(opts[0]).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  const o1 = opts[1] == null ? '' : String(opts[1]).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  const isJudgment = (opts.length === 2 && o0 === '正确' && o1 === '错误') || (opts.length === 0 && arr.every((i) => i === 0 || i === 1));
+  if (isJudgment) return arr.map((i) => (i === 0 ? '正确' : '错误')).join('、');
+  return arr.map((i) => {
+    const t = opts[i] == null ? '' : String(opts[i]).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    return t ? t.slice(0, 40) : (DIAG_LETTERS[i] ?? String(i));
+  }).join('、');
+}
+
+/** 题干/解析去 HTML 后截断（content 140 字 / analysis 240 字） */
+export function diagClean(s, n) {
+  return String(s || '').replace(/<[^>]*>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim().slice(0, n);
 }
 
 /** 判分：选项索引 → 是否正确（与 server checkAnswer 相同；兼容已解析的 options 数组） */
