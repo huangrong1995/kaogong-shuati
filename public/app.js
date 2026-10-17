@@ -384,7 +384,7 @@ function showAnswerFeedback(q, j, selected) {
     <div id="ai-explain-result-fb" style="display:none"></div>
     <button class="btn btn-primary btn-block" id="btn-fb-next">下一题</button>
   `;
-  view.appendChild(box);
+  (view.querySelector('.quiz-main') || view).appendChild(box);
   box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   $('#btn-note-fb').onclick = () => openNoteSheet(q);
   $('#btn-ai-explain-fb').onclick = () => explainQuestion(q, selected, j.correct, box);
@@ -556,7 +556,7 @@ async function renderHome() {
     // Hero：今日作答卡
     const hasData = stats && stats.total > 0;
     const hero = el('div', 'hero', `
-      <div class="hero-eyebrow">EXAM ARCHIVE · ${hasData ? '你的学习档案' : '新档案'}</div>
+      <div class="hero-eyebrow">${hasData ? '学习档案' : '新档案'}</div>
       <div class="hero-title">${hasData ? '继续保持，坚持就是上岸' : '开始刷第一道题'}</div>
       <div class="hero-stats">
         ${hasData ? `
@@ -643,9 +643,28 @@ async function renderHome() {
       const total = Array.isArray(d) ? d.length : (d.total ?? 0);
       if (lbl) lbl.textContent = `笔记${total ? ` (${total})` : ''}`;
     }).catch(() => {});
+    layoutHome(view);
   } catch (e) {
     view.innerHTML = `<div class="empty">加载失败：${e.message}</div>`;
   }
+}
+
+/** 桌面/平板宽屏（≥980px）：首页改为学习桌——主列（Hero + 题库网格）+ 右侧常驻快捷入口；手机端不变 */
+function layoutHome(view) {
+  if (window.innerWidth < 980) return;
+  const hero = view.querySelector('.hero');
+  const grid = view.querySelector('.subject-grid');
+  const quick = view.querySelector('.card'); // 快捷入口卡（hero/grid 之后的 .card）
+  if (!hero || !grid || !quick) return;
+  const main = el('div', 'home-main');
+  main.appendChild(hero);
+  main.appendChild(grid);
+  const aside = el('div', 'home-aside');
+  aside.appendChild(quick);
+  const layout = el('div', 'home-layout');
+  layout.appendChild(main);
+  layout.appendChild(aside);
+  view.appendChild(layout);
 }
 
 // ================= 自定义题库（2026-08-15：文件导入 → 批次管理 → 刷题判分） =================
@@ -2021,7 +2040,7 @@ async function renderSubject(subject, skipNav) {
         ${isCustomOk ? `<button class="btn btn-primary btn-sm" id="btn-custom-practice">${ico('sliders', 14)} 自定义刷题</button>` : ''}
       </h3>
       <div class="card-sub">${isCustomOk ? customCfgHint() : '与粉笔同步的知识点目录，逐级展开开始刷题'}</div>`);
-    const chapList = el('div');
+    const chapList = el('div', 'mod-tree');
     chapCard.appendChild(chapList);
     view.appendChild(chapCard);
     if (isCustomOk) $('#btn-custom-practice').onclick = () => openCustomPractice(subject);
@@ -2030,12 +2049,14 @@ async function renderSubject(subject, skipNav) {
     } else {
       for (const [gi, g] of chapters.entries()) {
         const group = el('div', 'mod-group');
-        const head = el('div', 'mod-group-head', `
+        const head = el('div', 'mod-group-head');
+        head.style.setProperty('--p', g.rate ?? 0); // 正确率进度线（无数据则空轨道）
+        head.innerHTML = `
           <span class="mg-ico ${modTint(gi)}">${ico('book', 17)}</span>
           <span class="mg-name">${esc(g.group)}</span>
           <span class="mg-stat">${g.total} 题 · 已做 ${g.done}${g.rate != null ? ` · ${g.rate}%` : ''}</span>
           <span class="mg-arrow">▾</span>
-        `);
+        `;
         const body = el('div', 'mod-group-body');
         body.style.display = 'none';
         // 第一个子项：全部（该大模块全部题）
@@ -2138,7 +2159,7 @@ async function renderSubject(subject, skipNav) {
     view.appendChild(catCard);
     $('#cat-toggle').onclick = () => {
       const open = catBody.style.display !== 'none';
-      catBody.style.display = open ? 'none' : 'block';
+      catBody.style.display = open ? 'none' : ''; // '' 恢复 CSS 默认（桌面两列网格 / 手机 block）
       $('#cat-toggle').textContent = open ? '展开 ▾' : '收起 ▴';
     };
     view.appendChild(catCard);
@@ -2168,7 +2189,7 @@ async function renderCategory(subject, category, skipNav) {
     view.appendChild(all);
     $('#btn-practice-all').onclick = () => renderPractice(subject, null, papers[0].id);
 
-    const list = el('div');
+    const list = el('div', 'list-grid');
     for (const p of papers) {
       const item = el('div', 'list-item', `
         <span class="li-icon tint-green">${ico('fileText', 18)}</span>
@@ -2880,7 +2901,7 @@ function renderQuestion() {
     $('#btn-pause').onclick = pauseToggle;
   }
   // 答题进度条
-  view.appendChild(el('div', 'q-progress-bar', `<div class="fill" style="width:${total ? Math.round(((s.idx) / total) * 100) : 0}%"></div>`));
+  view.appendChild(el('div', 'q-progress-bar', `<div class="fill" style="width:${total ? Math.round(((s.idx + 1) / total) * 100) : 0}%"></div>`));
   const meta = el('div', 'q-meta', `
     ${q.chapter ? `<span class="tag tag-chapter">${q.chapter}</span>` : ''}
     <span class="tag tag-type">${TYPE_NAME[q.type] || '题'}</span>
@@ -2906,20 +2927,16 @@ function renderQuestion() {
   };
   // 答题卡弹层（粉笔风格：题号网格 + 已答标记 + 跳题）
   $('#q-card').onclick = () => {
-    const overlay = el('div', 'sheet-overlay');
+    const overlay = el('div', 'sheet-overlay drawer');
     overlay.innerHTML = `
       <div class="sheet">
         <div class="sheet-head">
           <b>答题卡</b>
-          <span style="color:var(--text-3);font-size:12px">${s.results.filter(Boolean).length} / ${total} 已答</span>
+          <span style="color:var(--text-3);font-size:12px">${s.answers.filter((a) => a && a.selected != null).length} / ${total} 已答</span>
           <button class="sheet-close">✕</button>
         </div>
         <div class="sheet-grid">
-          ${s.questions.map((_, i) => {
-            const answered = s.answers[i] && s.answers[i].selected != null;
-            const st = answered ? 'ok' : '';
-            return `<div class="sheet-cell ${i === s.idx ? 'cur' : ''} ${st}">${i + 1}</div>`;
-          }).join('')}
+          ${sheetGridCells(s.questions, s.answers, s.idx, 'quiz')}
         </div>
         <div class="sheet-legend">
           <span><i class="dot ok"></i>已答</span><span><i class="dot"></i>未答</span>
@@ -2933,9 +2950,11 @@ function renderQuestion() {
     view.appendChild(overlay);
   };
 
+  const qCard = el('div', 'q-card');
   const content = el('div', 'q-content');
   renderContent(content, q);
-  view.appendChild(content);
+  qCard.appendChild(content);
+  view.appendChild(qCard);
 
   // 材料题组：显示材料（material HTML）+ 小问标记
   // 默认展开（材料题需边看边算），状态栏显示字数/图片数，头部可收起，支持全屏查看 + 点图放大
@@ -2954,7 +2973,7 @@ function renderQuestion() {
         <button type="button" class="mat-full" title="全屏查看材料">${ico('expand', 14)} 全屏查看</button>
       </div>
       <div class="mat-body">${matHtml}</div>`;
-    view.insertBefore(matBox, content.nextSibling);
+    view.insertBefore(matBox, qCard.nextSibling);
     const body = matBox.querySelector('.mat-body');
     matBox.querySelector('.mat-head').onclick = (e) => {
       if (e.target.closest('.mat-full')) return; // 全屏按钮不触发展开/收起
@@ -2971,7 +2990,7 @@ function renderQuestion() {
     // 申论/综应：加载给定材料（题干带 [materialid] 或整卷材料）并展示
     const matBox = el('div', 'material-box');
     matBox.innerHTML = `<div class="mat-head">${ico('fileText', 14)} 给定材料 <span class="mat-status">加载中…</span></div><div class="mat-body" style="display:none;white-space:pre-wrap;max-height:320px"></div>`;
-    view.insertBefore(matBox, content.nextSibling);
+    view.insertBefore(matBox, qCard.nextSibling);
     const status = matBox.querySelector('.mat-status');
     const body = matBox.querySelector('.mat-body');
     matBox.querySelector('.mat-head').onclick = () => { body.style.display = body.style.display === 'none' ? 'block' : 'none'; };
@@ -3144,7 +3163,7 @@ function renderQuestion() {
         <button class="btn btn-ghost btn-block" style="margin-bottom:6px" id="btn-ai-explain">${ico('sparkles', 15)} AI 解析本题（解析考点/错项/技巧）</button>
         <div id="ai-explain-result" style="display:none"></div>
       `;
-      view.appendChild(box);
+      (view.querySelector('.quiz-main') || view).appendChild(box);
       $('#btn-ai-explain').onclick = () => explainQuestion(q, s.answers[s.idx]?.selected, s.answers[s.idx]?.correct ?? null, box);
     };
     const subSubmit = el('button', 'btn btn-primary', '交卷');
@@ -3153,6 +3172,7 @@ function renderQuestion() {
     subActions.appendChild(subExplain);
     subActions.appendChild(subSubmit);
     view.appendChild(subActions);
+    layoutQuiz(view, true); // 主观题：进度条与计时留在主列，答题卡侧栏不显示
     return;
   }
 
@@ -3288,10 +3308,10 @@ function renderQuestion() {
       <button class="btn btn-ghost btn-block" style="margin-bottom:6px" id="btn-ai-explain">${ico('sparkles', 15)} AI 解析本题（考点/错项/技巧）</button>
       <div id="ai-explain-result" style="display:none"></div>
     `;
-    view.appendChild(box);
+    (view.querySelector('.quiz-main') || view).appendChild(box);
     $('#btn-ai-explain').onclick = () => explainQuestion(q, s.answers[s.idx]?.selected, s.answers[s.idx]?.correct ?? null, box);
   };
-  const submitBtn = el('button', 'btn btn-primary', '交卷');
+  const submitBtn = el('button', 'btn btn-primary btn-submit-obj', '交卷');
   submitBtn.onclick = () => { if (paused()) { toast('已暂停，先点继续再交卷'); return; } submitExam(); };
   actions.appendChild(noteBtn);
   actions.appendChild(explainBtn);
@@ -3317,28 +3337,99 @@ function renderQuestion() {
     actions.appendChild(rmBtn);
   }
   view.appendChild(actions);
-  maybeSplitMaterial(view);
+  layoutQuiz(view, false); // 客观题：答题卡常驻右侧侧栏（≥980px），材料/题干/选项在主列
 }
 
-/** 桌面/平板宽屏（≥980px）：材料题改为左右分屏——材料固定左侧滚动、题干+选项右侧，边看边算；手机端布局不变 */
-function maybeSplitMaterial(view) {
-  if (window.innerWidth < 980) return;
-  const box = view.querySelector('.material-box');
-  if (!box) return;
-  const left = el('div', 'quiz-split-left');
-  const right = el('div', 'quiz-split-right');
-  let node = box.nextSibling; // 材料盒之后的选项/操作条等移入右栏，材料盒保留在左栏
-  while (node) {
-    const next = node.nextSibling;
-    right.appendChild(node);
-    node = next;
-  }
-  left.appendChild(box);
-  const row = el('div', 'quiz-split-row');
-  row.appendChild(left);
-  row.appendChild(right);
-  view.appendChild(row);
+/**
+ * 答题卡题号网格（quiz / review 共用，逐字段与两种弹层一致）
+ * @param questions 题目数组
+ * @param answers   作答记录数组（quiz: selected 标记已答；review: correct 三态）
+ * @param curIdx    当前题号（quiz 才传，标 .cur）
+ * @param mode      'quiz' | 'review'
+ */
+function sheetGridCells(questions, answers, curIdx, mode) {
+  const isQuiz = mode === 'quiz';
+  return questions.map((_, i) => {
+    const a = answers[i];
+    let cls = '';
+    if (isQuiz) {
+      if (a && a.selected != null) cls = 'ok';
+    } else {
+      const ok = a && a.correct != null ? a.correct : null;
+      if (ok === true) cls = 'ok';
+      else if (ok === false) cls = 'no';
+    }
+    return `<div class="sheet-cell ${i === curIdx ? 'cur' : ''} ${cls}"${isQuiz ? '' : ` data-i="${i}"`}">${i + 1}</div>`;
+  }).join('');
 }
+
+/** 桌面/平板宽屏（≥980px）：刷题页双栏考场布局——左列题干/材料/选项，右列常驻答题卡；手机端布局不变 */
+function layoutQuiz(view, isEssay) {
+  if (window.innerWidth < 980) return;
+  const s = store.state;
+  const total = s.questions.length;
+
+  // 把进度条移入主列顶部（进度永远代表整套题的作答进度）
+  const prog = view.querySelector('.q-progress-bar');
+  if (prog) {
+    const first = view.firstElementChild;
+    if (first && first !== prog) view.insertBefore(prog, first);
+  }
+
+  // 右侧答题卡侧栏（常驻）：题号网格 + 已答计数 + 计时 + 图例 + 交卷（仅客观题）
+  const answered = s.answers.filter((a) => a && a.selected != null).length;
+  const rail = el('aside', 'quiz-rail');
+  rail.innerHTML = `
+    <div class="rail-head">
+      <b>答题卡</b>
+      <span class="rail-count">${answered} / ${total} 已答</span>
+    </div>
+    <div class="sheet-grid">${sheetGridCells(s.questions, s.answers, s.idx, 'quiz')}</div>
+    <div class="sheet-legend">
+      <span><i class="dot ok"></i>已答</span><span><i class="dot"></i>未答</span>
+    </div>
+    ${!isEssay ? `<button class="btn btn-primary btn-block" id="rail-submit">${ico('check', 15)} 交卷</button>` : ''}
+  `;
+  rail.querySelectorAll('.sheet-cell').forEach((cell, i) => {
+    cell.onclick = () => {
+      if (i === s.idx) return;
+      confirmPendingMulti(); // 当前题多选已选未确认 → 先判分再离开（与滑动切题一致）
+      stampCost(s.idx);
+      s.idx = i;
+      renderQuestion();
+    };
+  });
+  const railSubmit = rail.querySelector('#rail-submit');
+  if (railSubmit) railSubmit.onclick = () => { if (paused()) { toast('已暂停，先点继续再交卷'); return; } submitExam(); };
+
+  // 计时条移入侧栏顶部（计时随答题卡常驻）
+  const timer = view.querySelector('.timer-bar');
+  const railHead = rail.querySelector('.rail-head');
+  if (timer) railHead.insertAdjacentElement('afterend', timer);
+
+  // 主列：包住其余全部子节点
+  const main = el('div', 'quiz-main');
+  while (view.firstElementChild) main.appendChild(view.firstElementChild);
+  const layout = el('div', 'quiz-layout');
+  layout.appendChild(main);
+  layout.appendChild(rail);
+  view.appendChild(layout);
+}
+
+// 跨过 980px 阈值（手机↔桌面/横屏）时重排刷题页：双栏布局只在进入时建、离开时随 setView 整段销毁，
+// 跨阈值需整页重渲染才能切换题干卡/双栏补位。答题状态在 store.state 里，重渲染无损。
+let quizResizeDesktop = window.innerWidth >= 980;
+let quizResizeTimer = 0;
+window.addEventListener('resize', () => {
+  clearTimeout(quizResizeTimer);
+  quizResizeTimer = setTimeout(() => {
+    const nowDesktop = window.innerWidth >= 980;
+    if (nowDesktop === quizResizeDesktop) return;
+    quizResizeDesktop = nowDesktop;
+    const view = document.getElementById('view');
+    if (view && view.hasAttribute('data-exam')) renderQuestion();
+  }, 150);
+});
 
 function submitAnswer(q, selected, optWrap, opts, isMulti) {
   api('/api/check', {
@@ -3472,7 +3563,7 @@ function renderReview() {
   const elapsed = s.timing?.elapsed ?? 0;
   view.innerHTML = '';
   view.appendChild(el('div', 'hero', `
-    <div class="hero-eyebrow">EXAM ARCHIVE · 本次成绩</div>
+    <div class="hero-eyebrow">本次成绩</div>
     <div class="hero-title">答对 ${correctN} / ${scored.length} 题</div>
     <div class="hero-stats">
       <div class="hero-stat"><div class="hs-num">${rate}%</div><div class="hs-label">正确率</div></div>
@@ -3508,6 +3599,9 @@ function renderReview() {
   const fab = el('button', 'review-fab', `${ico('grid', 16)} 答题卡`);
   fab.onclick = () => showReviewSheet(cards);
   view.appendChild(fab);
+  // 复盘卡片网格（≥980px 两列铺开；"完成，返回"横跨两列）
+  const grid = el('div', 'review-grid');
+  view.appendChild(grid);
   s.questions.forEach((q, i) => {
     const a = s.answers[i] || { selected: null, correct: null, costMs: 0 };
     const j = judge(q, a.selected);
@@ -3573,12 +3667,12 @@ function renderReview() {
     card.appendChild(rowBtns);
     card.appendChild(rbox);
     cards.push(card);
-    view.appendChild(card);
+    grid.appendChild(card);
   });
   const back = el('button', 'btn btn-primary btn-block', '完成，返回');
   back.style.marginTop = '6px';
   back.onclick = () => (store.state.mode === 'single' ? exitSingle() : goBack());
-  view.appendChild(back);
+  grid.appendChild(back);
 }
 
 /** 结果页筛选：all=全部 / wrong=错题 / none=无标准答案 */
@@ -3594,16 +3688,11 @@ function applyReviewFilter(key, cards) {
 /** 答题卡悬浮框：题号网格（绿=答对 红=答错 灰=无答案），点击跳转到对应题目 */
 function showReviewSheet(cards) {
   const s = store.state;
-  const overlay = el('div', 'sheet-overlay');
-  const cells = s.questions.map((_, i) => {
-    const ok = s.answers[i]?.correct;
-    const cls = ok == null ? '' : (ok ? 'ok' : 'no');
-    return `<div class="sheet-cell ${cls}" data-i="${i}">${i + 1}</div>`;
-  }).join('');
+  const overlay = el('div', 'sheet-overlay drawer');
   overlay.innerHTML = `
     <div class="sheet">
       <div class="sheet-head"><b>${ico('grid', 16)} 答题卡</b><span class="sheet-count">${s.questions.length} 题</span><button class="sheet-close">✕</button></div>
-      <div class="sheet-grid">${cells}</div>
+      <div class="sheet-grid">${sheetGridCells(s.questions, s.answers, -1, 'review')}</div>
       <div class="sheet-legend">
         <span><i class="dot ok"></i>答对</span>
         <span><i class="dot no"></i>答错</span>
@@ -4173,13 +4262,13 @@ function moduleTabsEl(activeKey, onPick) {
 
 /** 三模块共用：子模块列表（首行「全部」+ 各子模块行，点击回调接收 {key,name}） */
 function moduleSubsEl(group, onPick) {
-  const listEl = el('div');
+  const listEl = el('div', 'list-grid');
   const mk = (key, name, count, tint, ic) => {
     const item = el('div', 'list-item', `
       <span class="li-icon ${tint}">${ico(ic, 18)}</span>
       <div class="li-main">
         <div class="li-title">${esc(name)}</div>
-        <div class="li-sub">${count} 题</div>
+        <div class="li-sub"><b>${count}</b> 题</div>
       </div>
       <span class="li-arrow">›</span>`);
     item.onclick = () => onPick(key, name);
@@ -4261,10 +4350,15 @@ async function renderWrongTab(view) {
   }
   const name = moduleTabName(tab);
   const g = groups.find((x) => x.key === tab) || { key: tab, name, count: 0, subs: [] };
-  const card = el('div', 'card', `<h3>${esc(name)}错题共 ${g.count} 条</h3>
-    <button class="btn btn-primary btn-block" id="wrong-random">${ico('play', 15)} 随机练习（从${esc(name)}错题抽 10-15 题）</button>
-    <button class="btn btn-ghost btn-block" id="wrong-organize">${ico('folderTree', 15)} 一键整理（自动归类历史未分类错题）</button>
-    <button class="btn btn-danger btn-block" id="clear-wrong">${ico('trash', 15)} 清空${esc(name)}错题</button>
+  const card = el('div', 'card wrong-card', `
+    <div class="wrong-card-head">
+      <div class="wrong-stat"><div class="ws-num">${g.count}</div><div class="ws-label">${esc(name)} · 待订错题</div></div>
+      <div class="wrong-actions">
+        <button class="btn btn-primary" id="wrong-random" title="从当前模块错题随机抽 10-15 题练习">${ico('play', 15)} 随机练习</button>
+        <button class="btn btn-ghost" id="wrong-organize" title="自动归类历史未分类错题">${ico('folderTree', 15)} 一键整理</button>
+        <button class="btn btn-danger" id="clear-wrong" title="移除该模块全部错题记录">${ico('trash', 15)} 清空错题</button>
+      </div>
+    </div>
     <div class="li-tip">${ico('lightbulb', 13)} 点击子模块查看对应错题，点击错题可直接重做</div>`);
   view.appendChild(card);
   $('#wrong-random').onclick = () => startWrongRandom(tab, '');
@@ -4315,12 +4409,17 @@ async function renderWrongList(groupKey, subKey, subName, skipNav) {
       return;
     }
     view.innerHTML = '';
-    const card = el('div', 'card', `<h3>${esc(subName)} · 错题 ${wState.total} 条</h3>
-      <button class="btn btn-primary btn-block" id="wrong-random">${ico('play', 15)} 随机练习（从错题抽 10-15 题）</button>
+    const card = el('div', 'card wrong-card', `
+      <div class="wrong-card-head">
+        <div class="wrong-stat"><div class="ws-num">${wState.total}</div><div class="ws-label">${esc(subName)} · 待订错题</div></div>
+        <div class="wrong-actions">
+          <button class="btn btn-primary" id="wrong-random" title="从当前模块错题随机抽 10-15 题练习">${ico('play', 15)} 随机练习</button>
+        </div>
+      </div>
       <div class="li-tip">${ico('lightbulb', 13)} 点击任意错题可直接重做该题</div>`);
     view.appendChild(card);
     $('#wrong-random').onclick = () => startWrongRandom(groupKey, subKey);
-    const listEl = el('div');
+    const listEl = el('div', 'list-grid');
     for (const w of list) {
       listEl.appendChild(wrongItemEl(w, () => openQuestionBatch('wrong', w.questionId, groupKey, subKey, subName), async (w2) => {
         // 单条移出错题本（两端都按 questionId 删除错题记录）
@@ -4346,8 +4445,11 @@ function wrongItemEl(w, onClick, onRemove) {
   const item = el('div', `list-item${w.available === false ? ' is-disabled' : ''}`, `
     <span class="li-icon tint-red">${ico('xCircle', 18)}</span>
     <div class="li-main">
-      <div class="li-title">${w.available === false ? `${esc(w.content || '（题目已移除）')} <span class="li-badge">已移除</span>` : esc(w.content || '（无题干）')}</div>
-      <div class="li-sub">你的答案 ${esc(w.myAnswer || '-')} · ${esc(w.subject || '')} ${esc(w.chapter || '')}</div>
+      <div class="li-title li-title-2">${w.available === false ? `${esc(w.content || '（题目已移除）')} <span class="li-badge">已移除</span>` : esc(w.content || '（无题干）')}</div>
+      <div class="li-sub-row">
+        <span class="li-ans">你的答案 ${esc(w.myAnswer || '-')}</span>
+        <span class="li-meta">${esc(w.subject || '')} ${esc(w.chapter || '')}</span>
+      </div>
     </div>
     <span class="li-del" title="移出错题本">${ico('trash', 15)}</span>
     <span class="li-arrow">›</span>
@@ -4426,7 +4528,7 @@ async function startWrongRandom(groupKey, subKey) {
   } catch (e) {
     toast('随机练习失败：' + e.message);
   } finally {
-    if (toastBtn) { toastBtn.disabled = false; toastBtn.textContent = `${ico('play', 15)} 随机练习（从错题抽 10-15 题）`; }
+    if (toastBtn) { toastBtn.disabled = false; toastBtn.textContent = `${ico('play', 15)} 随机练习`; }
   }
 }
 
@@ -4567,7 +4669,7 @@ async function renderFavList(groupKey, subKey, subName, skipNav) {
     const card = el('div', 'card', `<h3>${esc(subName)} · 收藏 ${fState.total} 条</h3>
       <div class="li-tip">${ico('lightbulb', 13)} 点击收藏可直接重做该题</div>`);
     view.appendChild(card);
-    const listEl = el('div');
+    const listEl = el('div', 'list-grid');
     for (const f of list) listEl.appendChild(favItemEl(f, listEl, view, 'favorites', groupKey, subKey, subName));
     view.appendChild(listEl);
     appendFavMore(view, listEl, loadPage, 'favorites', groupKey, subKey, subName);
@@ -4834,7 +4936,7 @@ async function renderNotesList(groupKey, subKey, subName, skipNav) {
       <div class="li-tip">${ico('lightbulb', 13)} 点击笔记可重做该题，做题中或成绩页点「查看笔记」可随时修改</div>`);
     view.appendChild(card);
     $('#note-random').onclick = () => startNotesRandom(groupKey, subKey);
-    const listEl = el('div');
+    const listEl = el('div', 'list-grid');
     for (const n of list) listEl.appendChild(noteItemEl(n, listEl, view, 'notes', groupKey, subKey, subName));
     view.appendChild(listEl);
     appendNotesMore(view, listEl, loadPage, 'notes', groupKey, subKey, subName);
@@ -5039,6 +5141,9 @@ async function renderAiSettings() {
     };
   });
 
+  // 智能体卡片网格（≥1200px 两列；手机单列）
+  const agentGrid = el('div', 'ai-agent-grid');
+  view.appendChild(agentGrid);
   for (const a of agents) {
     const card = el('div', 'card');
     card.innerHTML = `
@@ -5207,7 +5312,7 @@ async function renderAiSettings() {
         <pre style="white-space:pre-wrap;font-size:12px;line-height:1.5;max-height:120px;overflow:auto;background:var(--bg);padding:8px;border-radius:8px">${esc((x.system_prompt || '').slice(0, 300))}</pre>
       `).join('');
     };
-    view.appendChild(card);
+    agentGrid.appendChild(card);
   }
 }
 

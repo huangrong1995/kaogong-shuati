@@ -6,33 +6,37 @@
 
 * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 
-/* ---------- Token（浅色 = 默认，Apple systemPalette） ---------- */
+/* ---------- Token（浅色 = 默认，深海军蓝 + 鎏金 · 海雾纸底） ---------- */
 :root {
-  --bg: #f2f2f7;                 /* systemGroupedBackground */
-  --bg-soft: #e9e9ee;            /* 轨道/次级填充 */
-  --card: #ffffff;               /* 卡片（secondarySystemGroupedBackground） */
-  --card-2: #f2f2f7;             /* 次级底 */
-  --text: #000000;               /* systemLabel */
-  --text-2: rgba(60, 60, 67, .66);   /* secondaryLabel */
-  --text-3: rgba(60, 60, 67, .38);   /* tertiaryLabel */
-  --muted: rgba(60, 60, 67, .48);
-  --primary: #007aff;            /* systemBlue */
-  --primary-strong: #0062dd;     /* 按下态 */
-  --primary-fill: #007aff;       /* 白字实心场景（按钮/选中态） */
-  --primary-soft: rgba(0, 122, 255, .09);
-  --primary-glow: rgba(0, 122, 255, .25); /* 兼容别名：一律不再发光，仅保留变量 */
-  --primary-shadow: rgba(0, 122, 255, .28);
-  --accent: #ff9500;             /* systemOrange */
-  --border: rgba(60, 60, 67, .13);       /* hairline separator */
-  --border-strong: rgba(60, 60, 67, .3);
-  --green: #34c759;              /* systemGreen */
+  /* 字体：展示用宋体（试卷/榜文的书卷气）· 正文系统无衬线 */
+  --font-display: "Noto Serif SC", "Source Han Serif SC", "Songti SC", "STSong", "SimSun", serif;
+  --font-body: -apple-system, BlinkMacSystemFont, "SF Pro SC", "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --bg: #eef2f6;                 /* 海雾纸白（冷调，替代 #f2f2f7） */
+  --bg-soft: #e4e9f0;            /* 轨道/次级填充 */
+  --card: #ffffff;               /* 卡片 */
+  --card-2: #eef2f7;             /* 次级底 */
+  --text: #102338;               /* 墨蓝黑（替代纯黑） */
+  --text-2: rgba(16, 35, 56, .62);   /* secondaryLabel */
+  --text-3: rgba(16, 35, 56, .38);   /* tertiaryLabel */
+  --muted: rgba(16, 35, 56, .5);
+  --primary: #14508d;            /* 深海军蓝 */
+  --primary-strong: #0d3f6e;     /* 按下态 */
+  --primary-fill: #14508d;       /* 白字实心场景（按钮/选中态） */
+  --primary-soft: rgba(20, 80, 141, .10);
+  --primary-glow: rgba(20, 80, 141, .25); /* 兼容别名：一律不再发光，仅保留变量 */
+  --primary-shadow: rgba(20, 80, 141, .35);
+  --accent: #b4843a;             /* 鎏金（印章金） */
+  --border: rgba(23, 58, 90, .15);       /* hairline separator */
+  --border-strong: rgba(23, 58, 90, .34);
+  --green: #34c759;              /* 对=绿（保持现状） */
   --green-soft: rgba(52, 199, 89, .12);
-  --red: #ff3b30;                /* systemRed */
+  --red: #ff3b30;                /* 错=红（保持现状） */
   --red-soft: rgba(255, 59, 48, .1);
-  --amber: #ff9500;              /* systemOrange（=accent） */
-  --amber-soft: rgba(255, 149, 0, .14);
+  --amber: #b4843a;              /* 金印（=accent：收藏星/题型/警示） */
+  --amber-soft: rgba(180, 132, 58, .16);
   --violet: #af52de;             /* systemPurple */
   --cyan: #30b0c7;               /* 青（图标块用） */
+  --hero-grad: linear-gradient(135deg, #165a94 0%, #0e7490 100%); /* 全 App 唯一渐变：深海蓝→深海绿 */
   --radius: 16px;                /* 卡片 */
   --radius-sm: 12px;             /* 控件 */
   --radius-xs: 9px;              /* 小元素 */
@@ -47,33 +51,34 @@
   --text-1: var(--text);
 }
 
-/* ---------- Token（深色：纯黑 + 更高层卡片） ---------- */
+/* ---------- Token（深色：深海夜色 · 蓝黑 + 更高层卡片） ---------- */
 [data-theme="dark"] {
-  --bg: #000000;
-  --bg-soft: #1c1c1e;            /* systemGray6 */
-  --card: #1c1c1e;
-  --card-2: #2c2c2e;             /* systemGray5 */
-  --text: #ffffff;
-  --text-2: rgba(235, 235, 245, .62);
-  --text-3: rgba(235, 235, 245, .3);
-  --muted: rgba(235, 235, 245, .4);
-  --primary: #0a84ff;
-  --primary-strong: #409cff;
-  --primary-fill: #0a84ff;
-  --primary-soft: rgba(10, 132, 255, .16);
-  --primary-glow: rgba(10, 132, 255, .35);
-  --primary-shadow: rgba(10, 132, 255, .45);
-  --accent: #ff9f0a;
-  --border: rgba(84, 84, 88, .55);
-  --border-strong: rgba(84, 84, 88, .72);
-  --green: #30d158;
+  --bg: #08111c;                 /* 深海夜色（蓝黑，替代纯黑） */
+  --bg-soft: #142130;            /* 次级填充 */
+  --card: #12202e;
+  --card-2: #1b2d3f;             /* 更高层卡片 */
+  --text: #e9f1fa;
+  --text-2: rgba(233, 241, 250, .62);
+  --text-3: rgba(233, 241, 250, .36);
+  --muted: rgba(233, 241, 250, .42);
+  --primary: #5b9bd5;            /* 深海里更亮的蓝 */
+  --primary-strong: #7fb0de;
+  --primary-fill: #5b9bd5;
+  --primary-soft: rgba(91, 155, 213, .16);
+  --primary-glow: rgba(91, 155, 213, .35);
+  --primary-shadow: rgba(91, 155, 213, .45);
+  --accent: #d3a354;             /* 夜色鎏金 */
+  --border: rgba(150, 180, 215, .18);
+  --border-strong: rgba(150, 180, 215, .36);
+  --green: #30d158;              /* 对=绿（保持现状） */
   --green-soft: rgba(48, 209, 88, .16);
-  --red: #ff453a;
+  --red: #ff453a;                /* 错=红（保持现状） */
   --red-soft: rgba(255, 69, 58, .16);
-  --amber: #ff9f0a;
-  --amber-soft: rgba(255, 159, 10, .18);
+  --amber: #d3a354;              /* 金印（=accent） */
+  --amber-soft: rgba(211, 163, 84, .18);
   --violet: #bf5af2;
   --cyan: #40c8e0;
+  --hero-grad: linear-gradient(135deg, #123a5f 0%, #0d5466 100%); /* 深海渐变 */
   --shadow: none;
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, .4);
   --shadow-lg: 0 24px 48px rgba(0, 0, 0, .6);
@@ -82,31 +87,32 @@
 /* 跟随系统（无手动覆盖时） */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #000000;
-    --bg-soft: #1c1c1e;
-    --card: #1c1c1e;
-    --card-2: #2c2c2e;
-    --text: #ffffff;
-    --text-2: rgba(235, 235, 245, .62);
-    --text-3: rgba(235, 235, 245, .3);
-    --muted: rgba(235, 235, 245, .4);
-    --primary: #0a84ff;
-    --primary-strong: #409cff;
-    --primary-fill: #0a84ff;
-    --primary-soft: rgba(10, 132, 255, .16);
-    --primary-glow: rgba(10, 132, 255, .35);
-    --primary-shadow: rgba(10, 132, 255, .45);
-    --accent: #ff9f0a;
-    --border: rgba(84, 84, 88, .55);
-    --border-strong: rgba(84, 84, 88, .72);
+    --bg: #08111c;
+    --bg-soft: #142130;
+    --card: #12202e;
+    --card-2: #1b2d3f;
+    --text: #e9f1fa;
+    --text-2: rgba(233, 241, 250, .62);
+    --text-3: rgba(233, 241, 250, .36);
+    --muted: rgba(233, 241, 250, .42);
+    --primary: #5b9bd5;
+    --primary-strong: #7fb0de;
+    --primary-fill: #5b9bd5;
+    --primary-soft: rgba(91, 155, 213, .16);
+    --primary-glow: rgba(91, 155, 213, .35);
+    --primary-shadow: rgba(91, 155, 213, .45);
+    --accent: #d3a354;
+    --border: rgba(150, 180, 215, .18);
+    --border-strong: rgba(150, 180, 215, .36);
     --green: #30d158;
     --green-soft: rgba(48, 209, 88, .16);
     --red: #ff453a;
     --red-soft: rgba(255, 69, 58, .16);
-    --amber: #ff9f0a;
-    --amber-soft: rgba(255, 159, 10, .18);
+    --amber: #d3a354;
+    --amber-soft: rgba(211, 163, 84, .18);
     --violet: #bf5af2;
     --cyan: #40c8e0;
+    --hero-grad: linear-gradient(135deg, #123a5f 0%, #0d5466 100%);
     --shadow: none;
     --shadow-sm: 0 1px 3px rgba(0, 0, 0, .4);
     --shadow-lg: 0 24px 48px rgba(0, 0, 0, .6);
@@ -120,7 +126,7 @@ html[data-theme="dark"] { color-scheme: dark; }
   html:not([data-theme="light"]) { color-scheme: dark; }
 }
 body {
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro SC", "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-family: var(--font-body);
   background: var(--bg);
   color: var(--text);
   font-size: 16px;
@@ -147,6 +153,7 @@ h1, h2, h3, .hs-num, .stat-card .num { font-family: inherit; font-variant-numeri
 #topbar h1 {
   flex: 1; text-align: center;
   font-size: 17px; font-weight: 700; letter-spacing: 0;
+  font-family: var(--font-display); /* 品牌名宋体落款 */
   color: var(--text);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
@@ -171,6 +178,16 @@ h1, h2, h3, .hs-num, .stat-card .num { font-family: inherit; font-variant-numeri
 }
 #view.no-bottom { padding-bottom: 28px; }
 @keyframes viewIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+/* 桌面/平板宽屏（≥980px）：学习桌铺开——刷题考场最宽，其余 1080px */
+@media (min-width: 980px) {
+  #view { max-width: min(1080px, 96vw); padding-left: 28px; padding-right: 28px; }
+  #view[data-exam='1'] { max-width: min(1180px, 96vw); }
+}
+/* ≥1100px：科目卡一行四个（桌面学习桌密度） */
+@media (min-width: 1100px) {
+  .subject-grid { grid-template-columns: repeat(4, 1fr); }
+}
 
 /* ---------- 底部导航（iOS Tab Bar 毛玻璃） ---------- */
 #bottom-nav {
@@ -200,6 +217,22 @@ h1, h2, h3, .hs-num, .stat-card .num { font-family: inherit; font-variant-numeri
 .nav-item.active { color: var(--primary); font-weight: 700; }
 .nav-item.active .nav-ico { transform: translateY(-1px); }
 
+/* 桌面/平板（≥980px）：底部导航收成居中悬浮 dock，不再横贯全屏 */
+@media (min-width: 980px) {
+  #bottom-nav {
+    left: 50%; right: auto; transform: translateX(-50%);
+    width: max-content; max-width: 92vw;   /* 收窄贴合 4 个按钮，不再留空 */
+    bottom: 18px;
+    height: 52px;
+    padding: 4px 8px;
+    border-top: 1px solid var(--border);
+    border-radius: 999px;
+    box-shadow: var(--shadow-lg);
+  }
+  .nav-item { flex: none; min-width: 96px; height: 44px; border-radius: 999px; }
+  .nav-item:hover { background: var(--primary-soft); }
+}
+
 /* ---------- 卡片 ---------- */
 .card {
   background: var(--card);
@@ -211,33 +244,49 @@ h1, h2, h3, .hs-num, .stat-card .num { font-family: inherit; font-variant-numeri
 .card h3 { font-size: 15px; font-weight: 700; margin-bottom: 8px; letter-spacing: 0; }
 .card .card-sub { font-size: 12px; color: var(--text-2); margin-bottom: 10px; }
 
-/* ---------- 首页 Hero：今日作答卡（纯色平涂，iOS 健身环风格） ---------- */
+/* ---------- 首页/成绩 Hero：深海蓝→深海绿（全 App 唯一渐变） + 潮汐曲线装饰 ---------- */
 .hero {
   position: relative; overflow: hidden;
-  background: var(--primary-fill);
+  background: var(--hero-grad);
   color: #fff;
   border-radius: 22px;
   padding: 22px 20px 20px;
   margin-bottom: 16px;
   box-shadow: var(--shadow-lg);
 }
-.hero .hero-eyebrow { font-size: 11px; font-weight: 700; letter-spacing: 1.6px; opacity: .8; text-transform: uppercase; }
-.hero .hero-title { font-size: 22px; font-weight: 800; margin-top: 4px; letter-spacing: 0; }
+/* 潮汐水纹：唯一图形装饰，安静地沉在底部（12% 透明度） */
+.hero::after {
+  content: ""; position: absolute; left: -6%; right: -6%; bottom: -16px;
+  height: 44px; pointer-events: none; opacity: .14;
+  background: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 320 46' preserveAspectRatio='none'><path d='M0 28 C 60 12, 120 44, 180 26 S 280 8, 320 22' fill='none' stroke='%23ffffff' stroke-width='3'/></svg>") center / cover no-repeat;
+}
+.hero .hero-eyebrow {
+  font-size: 11px; font-weight: 700; letter-spacing: .5px;
+  color: rgba(255, 216, 150, .95); /* 鎏金印章感 */
+  position: relative; z-index: 1;
+}
+.hero .hero-title {
+  font-size: 22px; font-weight: 800; margin-top: 4px; letter-spacing: 0;
+  font-family: var(--font-display); /* 口号用宋体：榜文落款 */
+  position: relative; z-index: 1;
+}
 .hero .hero-stats { display: flex; gap: 22px; margin-top: 18px; position: relative; z-index: 1; }
 .hero .hero-stat .hs-num { font-size: 26px; font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1.1; }
 .hero .hero-stat .hs-label { font-size: 11px; opacity: .8; margin-top: 2px; }
 .hero .hero-cta {
   display: inline-flex; align-items: center; gap: 6px;
   margin-top: 18px; padding: 10px 20px;
-  background: #fff;
-  border: none;
+  background: rgba(255, 255, 255, .14); /* 海玻璃：水面下的按钮 */
+  border: 1px solid rgba(255, 255, 255, .35);
   border-radius: 999px;
-  font-size: 14px; font-weight: 700; color: var(--primary); cursor: pointer;
-  transition: opacity .15s ease, transform .1s ease;
+  font-size: 14px; font-weight: 700; color: #fff; cursor: pointer;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  transition: background .15s ease, transform .1s ease;
   position: relative; z-index: 1;
 }
-.hero .hero-cta:hover { opacity: .92; }
-.hero .hero-cta:active { transform: scale(.97); opacity: .85; }
+.hero .hero-cta:hover { background: rgba(255, 255, 255, .22); }
+.hero .hero-cta:active { transform: scale(.97); background: rgba(255, 255, 255, .3); }
 
 /* ---------- 题库网格（试卷封面卡） ---------- */
 .subject-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
@@ -269,7 +318,8 @@ h1, h2, h3, .hs-num, .stat-card .num { font-family: inherit; font-variant-numeri
 .subject-card .stat-line b { color: var(--text); font-weight: 800; font-variant-numeric: tabular-nums; }
 
 /* ---------- 快捷入口（iOS 应用库风格图标块） ---------- */
-.quick-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(56px, 1fr)); gap: 8px; }
+/* 手机 3×2 平衡（修掉 4+2 参差），≥720px 一行 6 个 */
+.quick-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .quick-item {
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 7px;
   background: var(--card); border: 1px solid var(--border);
@@ -313,11 +363,27 @@ h1, h2, h3, .hs-num, .stat-card .num { font-family: inherit; font-variant-numeri
 .list-item .li-arrow { color: var(--text-3); font-size: 15px; flex-shrink: 0; }
 .list-item .li-del {
   color: var(--text-3); font-size: 15px; flex-shrink: 0; cursor: pointer;
-  padding: 6px 4px 6px 8px; border-radius: 8px; transition: color .15s, background .15s;
+  padding: 6px 4px 6px 8px; border-radius: 8px; transition: color .15s, background .15s, opacity .15s;
 }
 .list-item .li-del:hover { color: var(--red, #ff3b30); background: var(--bg-2); }
 .list-item.li-disabled .li-del { opacity: .9; }
 .li-tip { font-size: 12px; color: var(--text-2); margin-top: 8px; }
+
+/* ---------- 错题本/收藏/笔记：统计头 + 操作按钮 ---------- */
+.wrong-card-head { display: flex; flex-direction: column; gap: 6px; }
+.wrong-stat { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
+.ws-num { font-size: 34px; font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1; color: var(--primary); }
+.ws-label { font-size: 13.5px; font-weight: 600; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wrong-actions { display: flex; gap: 8px; margin-top: 14px; }
+.wrong-actions .btn { flex: 1; padding: 11px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wrong-card .li-tip { margin-top: 10px; }
+
+/* 错题列表项：题干最多 2 行 + 答案/来源分栏 */
+.li-title-2 { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; line-height: 1.45; }
+.list-item .li-sub-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 4px; min-width: 0; }
+.li-ans { color: var(--red); font-size: 12px; font-weight: 700; flex-shrink: 0; }
+.li-meta { color: var(--text-3); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.list-item .li-sub b { color: var(--primary); font-weight: 800; }
 
 /* 笔记列表项：题干多行展示，其他信息紧凑 */
 .note-item .li-title {
@@ -600,17 +666,29 @@ h1, h2, h3, .hs-num, .stat-card .num { font-family: inherit; font-variant-numeri
 .iv-html p { margin: 0 0 10px; }
 .iv-material-foot { flex: 0 0 auto; margin-top: 12px; font-size: 12px; color: var(--text-3); display: flex; align-items: center; gap: 4px; }
 
-/* 桌面/平板宽屏（≥980px）：材料题左右分屏——材料固定左侧、题干+选项右侧，边看边算 */
+/* 桌面/平板宽屏（≥980px）：刷题页双栏考场——左列题干/材料/选项 + 右列常驻答题卡 */
 @media (min-width: 980px) {
-  #view[data-exam='1']:has(.quiz-split-row) { max-width: min(1180px, 96vw); }
-  .quiz-split-row { display: flex; gap: 18px; align-items: flex-start; }
-  .quiz-split-left { position: sticky; top: 84px; width: min(430px, 36vw); flex: 0 0 auto; max-height: calc(100vh - 112px); overflow: hidden; display: flex; flex-direction: column; background: var(--card-2); border: 1px solid var(--border); border-radius: 16px; padding: 12px; }
-  .quiz-split-left .mat-body { flex: 1 1 auto; max-height: none; overflow-y: auto; min-height: 0; }
-  .quiz-split-right { flex: 1 1 auto; min-width: 0; }
+  .quiz-layout { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 18px; align-items: start; }
+  .quiz-main { min-width: 0; }
+  .quiz-rail {
+    position: sticky; top: calc(var(--topbar-h) + 14px);
+    max-height: calc(100vh - var(--topbar-h) - 28px);
+    display: flex; flex-direction: column;
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 14px;
+  }
+  .quiz-rail .rail-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+  .quiz-rail .rail-head b { font-size: 15px; }
+  .quiz-rail .rail-count { font-size: 11.5px; color: var(--text-3); background: var(--bg-soft); border-radius: 8px; padding: 2px 8px; margin-left: auto; font-variant-numeric: tabular-nums; }
+  .quiz-rail .sheet-grid { flex: 1 1 auto; max-height: none; overflow-y: auto; padding: 2px; }
+  .quiz-rail .timer-bar { margin-bottom: 12px; border: none; background: var(--bg-soft); }
+  .quiz-rail .timer-tip { display: none; }
+  .quiz-rail #rail-submit { margin-top: 12px; }
+  /* 客观题底部操作条里的交卷隐藏（交卷在右侧答题卡常驻） */
+  #view[data-exam='1'] .quiz-main .btn-submit-obj { display: none; }
 }
 @media (max-width: 979px) {
-  .quiz-split-row { display: block; }
-  .quiz-split-left { margin: 0 0 10px; }
+  .quiz-rail { display: none; }
 }
 
 /* 分类折叠（专项练习标题行） */
@@ -684,6 +762,19 @@ h1, h2, h3, .hs-num, .stat-card .num { font-family: inherit; font-variant-numeri
 .mod-group-head .mg-stat { font-size: 11.5px; color: var(--text-3); font-variant-numeric: tabular-nums; }
 .mod-group-head .mg-arrow { color: var(--text-3); font-size: 12px; transition: transform .2s ease; }
 .mod-group-head.open { background: var(--primary-soft); }
+/* 大模块正确率进度线：底部 2px 细线，--p 百分比填充（鎏金，无数据空轨道） */
+.mod-group-head { position: relative; }
+.mod-group-head::after {
+  content: ""; position: absolute; left: 14px; right: 14px; bottom: 0;
+  height: 2px; border-radius: 999px;
+  background: var(--bg-soft);
+}
+.mod-group-head::before {
+  content: ""; position: absolute; left: 14px; bottom: 0;
+  height: 2px; width: calc((100% - 28px) * var(--p, 0) / 100); border-radius: 999px;
+  background: var(--accent);
+  z-index: 1;
+}
 .mod-group-body { padding: 4px 10px 10px; border-top: 1px dashed var(--border); }
 .mod-group-body .list-item { margin-bottom: 6px; padding: 10px 12px; }
 
@@ -772,6 +863,27 @@ h1, h2, h3, .hs-num, .stat-card .num { font-family: inherit; font-variant-numeri
 .sheet-legend .dot.ok { background: var(--green); }
 .sheet-legend .dot.no { background: var(--red); }
 
+/* 桌面/平板宽屏（≥980px）：答题卡弹层改右侧抽屉（仅刷题/复盘两个答题卡 overlay 带 .drawer） */
+@media (min-width: 980px) {
+  .sheet-overlay.drawer {
+    justify-content: flex-end; align-items: stretch;
+    padding: 0;
+    animation: drawerDim .18s ease;
+  }
+  .sheet-overlay.drawer .sheet {
+    width: min(380px, 92vw); height: 100%; max-height: 100%;
+    border-radius: 0; border: none; border-left: 1px solid var(--border);
+    display: flex; flex-direction: column;
+    padding: 16px 18px 22px;
+    animation: drawerIn .28s cubic-bezier(.32,.72,.34,1);
+  }
+  .sheet-overlay.drawer .sheet::before { display: none; }
+  .sheet-overlay.drawer .sheet-grid { flex: 1; max-height: none; overflow-y: auto; }
+  .sheet-overlay.drawer .sheet-legend { margin-top: 16px; }
+}
+@keyframes drawerDim { from { opacity: 0; } to { opacity: 1; } }
+@keyframes drawerIn { from { transform: translateX(60px); opacity: .4; } to { transform: none; opacity: 1; } }
+
 /* ---------- 空态 / 加载 ---------- */
 .empty { text-align: center; color: var(--text-3); padding: 56px 20px; font-size: 14px; line-height: 1.8; }
 .empty .empty-ico { font-size: 40px; display: block; margin-bottom: 10px; color: var(--text-3); }
@@ -824,6 +936,12 @@ textarea.field { resize: vertical; line-height: 1.6; }
 @media (min-width: 720px) {
   #view { padding-left: 22px; padding-right: 22px; }
   .subject-grid { grid-template-columns: repeat(3, 1fr); }
+  /* Hero 双列：左列标题/CTA，右列统计竖排右对齐 */
+  .hero { display: grid; grid-template-columns: 1fr auto; align-items: center; column-gap: 24px; padding: 26px 28px; }
+  .hero .hero-eyebrow, .hero .hero-title, .hero .hero-cta { grid-column: 1; }
+  .hero .hero-cta { margin-top: 16px; justify-self: start; } /* 不让网格把它拉满 1fr 列，按钮贴合文字 */
+  .hero .hero-stats { grid-column: 2; grid-row: 1 / 4; flex-direction: column; gap: 12px; margin-top: 0; text-align: right; }
+  .quick-grid { grid-template-columns: repeat(6, 1fr); }
 }
 
 /* ---------- 可访问性 ---------- */
@@ -836,7 +954,8 @@ textarea.field { resize: vertical; line-height: 1.6; }
   padding: 10px 0 10px;
   background: var(--bg);
 }
-.rv-tabs { display: flex; gap: 6px; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+@media (min-width: 980px) { .review-toolbar { top: var(--topbar-h); } }
+.rv-tabs { display: flex; gap: 6px; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: none; flex-wrap: wrap; }
 .rv-tabs::-webkit-scrollbar { display: none; }
 .rv-tab {
   border: 1px solid var(--border); background: var(--card);
@@ -879,8 +998,60 @@ textarea.field { resize: vertical; line-height: 1.6; }
 .review-fab:active { transform: scale(.95); box-shadow: 0 4px 12px var(--primary-shadow); }
 /* review 页无底部导航：按钮更贴近底部 */
 #view.no-bottom .review-fab { bottom: calc(20px + var(--safe-bottom, 0px)); }
+@media (min-width: 980px) { .review-fab { display: none; } }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}
+
+/* ---------- 桌面网格铺开（≥980px：学习桌布局） ---------- */
+@media (min-width: 980px) {
+  /* 复盘卡片：两列，最后「完成，返回」横跨两列 */
+  .review-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
+  .review-grid > .review-card { margin-bottom: 0; }
+  .review-grid > .btn-block { grid-column: 1 / -1; }
+
+  /* 首页：主列（Hero + 题库网格）+ 右侧快捷入口侧栏 */
+  .home-layout { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 18px; align-items: start; }
+  .home-aside .card { position: sticky; top: calc(var(--topbar-h) + 14px); }
+  /* 快捷入口 → 竖向导航侧栏（图标+文字横排，六列换单列，不再超界），手机端不受影响 */
+  .home-aside .quick-grid { grid-template-columns: 1fr; gap: 4px; }
+  .home-aside .quick-item {
+    flex-direction: row; justify-content: flex-start; gap: 10px;
+    padding: 8px 10px; border: none; background: transparent; border-radius: 10px;
+  }
+  .home-aside .quick-item:hover { background: var(--bg-soft); }
+  .home-aside .quick-item .qi-ico { width: 34px; height: 34px; border-radius: 10px; flex: none; }
+  .home-aside .quick-item .qi-label { font-size: 12.5px; text-align: left; }
+
+  /* 三模块子模块/题目列表：两列 */
+  .list-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  .list-grid > .list-item { margin-bottom: 0; }
+
+  /* 分类试卷列表：两列（JS 用 inline display 收起，inline 优先，无需 !important） */
+  #cat-body { display: grid; grid-template-columns: repeat(2, 1fr); gap: 9px; }
+
+  /* 自定义题库：批次卡/题目卡两列 */
+  .custom-list { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .custom-qlist { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+
+  /* 错题本/收藏/笔记：统计头与操作按钮同排横贯；列表删除按钮 hover 才显示 */
+  .wrong-card-head { flex-direction: row; align-items: center; justify-content: space-between; gap: 16px; }
+  .wrong-card-head .wrong-actions { margin-top: 0; }
+  .wrong-card-head .wrong-actions .btn { padding: 11px 16px; }
+  .list-item .li-del { opacity: 0; }
+  .list-item:hover .li-del, .list-item:focus-within .li-del { opacity: 1; }
+}
+
+/* 科目树：≥980px 大模块两列 */
+@media (min-width: 980px) {
+  .mod-tree { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; align-items: start; }
+  .mod-tree > .mod-group { margin-bottom: 0; }
+}
+
+/* AI 设置：≥1200px 智能体卡片两列 */
+@media (min-width: 1200px) {
+  .ai-agent-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; align-items: start; }
+  .ai-agent-grid > .card { margin-bottom: 0; }
 }
 
 /* ============ 智能组卷 ============ */
