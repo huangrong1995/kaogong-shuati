@@ -227,24 +227,48 @@ async function skillLoadedFor(skillField) {
 async function callVisionLocal(agent, imageDataUrl, mode = 'ocr', request) {
   if (!agent.api_key) return { error: '该 AI 未配置 api_key，请到 AI 设置页填写' };
   if (!agent.base_url) return { error: '未配置 base_url，请到 AI 设置页填写' };
-  const url = String(agent.base_url).replace(/\/+$/, '') + '/chat/completions';
+  // 与 server.mjs callVision 同构：支持 OpenAI 兼容（/chat/completions + image_url）与
+  // Anthropic Messages（/messages + image.source base64，MiniMax 官方 M3.1 等）两种协议
+  const isAnthropic = /anthropic/i.test(String(agent.base_url || ''));
+  const base = String(agent.base_url).replace(/\/+$/, '');
+  const url = isAnthropic ? (base.endsWith('/messages') ? base : base + '/messages') : base + '/chat/completions';
   const text = mode === 'ocr'
     ? '这是一张考生手写或打印的答题纸图片。请逐字准确转写图片中的全部作答文字（包括标点、数字、段落换行）。要求：1) 手写潦草处根据上下文合理推断；2) 不要修改、润色或添加任何内容；3) 只输出识别出的原文，不要任何解释或标记。'
 : mode === 'structure'
 	    ? '这是一张考公题目图片（试卷/练习册/资料截图，可能包含一道或多道题，也可能混有笔记、页码、答题App界面元素等非题目内容）。\n\n请仔细观察整张图片，先筛选出真正的题目，再每道题整理为结构化 JSON。\n\n## 一、题型识别\n\n### 1. 图形推理题\n- 题干：引导语如「从所给的四个选项中，选择最合适的一个填入问号处」「左图为给定的多面体」「左边给定的是正方体的外表面展开图」「把下面的六个图形分为两类」等\n- 选项：\n  - 普通图推 → 图片中选项是图形，无法转写文字时写 {"A. A", "B. B", "C. C", "D. D"}\n  - 分类题（题干含「把下面的六个图形分为两类」）→ 选项是编号文字，原样保留如 "A. ①②④，③⑤⑥"\n- prompt 只放引导语原文，不要描述图形内容\n\n### 2. 定义判断题\n- 题干：一段概念定义 + 问题「根据上述定义，下列…」「以下符合…的是」「以下不属于…的是」\n- 选项：4 个完整的事例描述，逐字转写\n\n### 3. 逻辑判断题\n- 题干：一段论述 + 问题\n- 选项：4 个完整推理\n\n### 4. 判断题（对错题）\n- 选项固定为 ["正确", "错误"]\n- answer 为"正确"或"错误"\n\n### 5. 材料题（资料分析/一拖五）\n- 题干前有材料（图表或文字），材料文字摘要放入 material 字段\n- 每道小题独立一条记录，每条的 material 都填同一材料\n\n## 二、输出格式\n{"questions":[{"prompt":"题干","material":"材料（没有则为空字符串）","options":["A. 选项1","B. 选项2"],"answer":"答案字母，单选如 A / 多选如 ABD / 判断如 正确；图片未显示答案则留空","analysis":"解析（没有则为空字符串）","category":"题目分类（言语理解/判断推理/数量关系/资料分析/常识判断/申论/综应；不确定则留空）"}]}\n\n## 三、要求\n1) 忠实图片内容，不编造、不补全缺失信息；一道题一个对象\n2) 图形推理题选项为占位符 "A. A" "B. B" "C. C" "D. D"，不要编造图形文字\n3) 分类题选项完整保留编号文字，如 "A. ①②④，③⑤⑥"\n4) 材料题的图表文字尽量准确转写进 material\n5) answer 只能从图片中明确标注的答案信息提取；图片未显示答案时必须留空字符串，禁止自行计算\n6) 判断图片中题目的类别并填入 category 字段\n7) 过滤噪音：页码、标题、答题按钮、统计行等非题目内容\n8) 只输出一个 JSON，不要任何其他文字、解释、Markdown 代码块或思考过程'
     : '这是一道考公题目的图片（可能包含题干图形序列和 A/B/C/D 选项图形）。请逐一详细转写图片中的全部内容：题干部分描述每个图形的形状/线条/数量/位置/规律；选项部分标注 A/B/C/D 对应关系。不要遗漏任何图形或文字。';
-  const body = {
-    model: agent.model,
-    messages: [{ role: 'user', content: [
-      { type: 'text', text },
-      // 支持多图：传数组时一次调用携带多张图（图推题干+选项、图表多图场景）
-      ...(Array.isArray(imageDataUrl) ? imageDataUrl : [imageDataUrl]).map((u) => ({ type: 'image_url', image_url: { url: u } })),
-    ] }],
-    temperature: 0.1,
-    max_tokens: agent.max_tokens || 4000,
-    stream: false,
-    reasoning_effort: 'low',
-  };
+  let body, headers;
+  if (isAnthropic) {
+    // 从 data URL 前缀解析 mime（data:image/png;base64,xxx），Anthropic 需要 media_type + 纯 base64 data
+    const imgs = (Array.isArray(imageDataUrl) ? imageDataUrl : [imageDataUrl]).map((u) => {
+      const m = /^data:(image\/[a-z+]+);base64,([\s\S]+)$/i.exec(String(u || ''));
+      if (m) return { media_type: m[1].toLowerCase(), data: m[2].trim() };
+      return { media_type: 'image/png', data: String(u || '').replace(/^data:.*base64,/, '').trim() };
+    }).filter((i) => i.data);
+    headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${agent.api_key}`, 'anthropic-version': '2023-06-01' };
+    body = {
+      model: agent.model,
+      max_tokens: agent.max_tokens || 4000,
+      messages: [{ role: 'user', content: [
+        { type: 'text', text },
+        ...imgs.map((i) => ({ type: 'image', source: { type: 'base64', media_type: i.media_type, data: i.data } })),
+      ] }],
+    };
+  } else {
+    headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${agent.api_key}` };
+    body = {
+      model: agent.model,
+      messages: [{ role: 'user', content: [
+        { type: 'text', text },
+        // 支持多图：传数组时一次调用携带多张图（图推题干+选项、图表多图场景）
+        ...(Array.isArray(imageDataUrl) ? imageDataUrl : [imageDataUrl]).map((u) => ({ type: 'image_url', image_url: { url: u } })),
+      ] }],
+      temperature: 0.1,
+      max_tokens: agent.max_tokens || 4000,
+      stream: false,
+      reasoning_effort: 'low',
+    };
+  }
   let lastErr = '';
   const deadline = Date.now() + 180000; // 总等待硬上限 3 分钟：超时/失败重试全部累计在内，避免界面无限转圈
   for (let attempt = 1; attempt <= 3; attempt++) {
@@ -255,7 +279,7 @@ async function callVisionLocal(agent, imageDataUrl, mode = 'ocr', request) {
     try {
       const r = await request(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${agent.api_key}` },
+        headers,
         body: JSON.stringify(body),
       });
       if (r.status === 429 || r.status >= 500) {
@@ -278,11 +302,15 @@ async function callVisionLocal(agent, imageDataUrl, mode = 'ocr', request) {
       }
       const d = await r.json().catch(() => null);
       if (!d) return { error: '识图 API 返回异常：状态 200 但响应体不是有效 JSON（网关异常）' };
-      const c = d.choices?.[0]?.message?.content;
+      // Anthropic Messages 文本在 content[] 的 text 块里（可能夹杂 thinking 块），OpenAI 在 choices[0].message.content
+      const c = isAnthropic
+        ? (Array.isArray(d.content) ? d.content.filter((b) => b.type === 'text' && b.text).map((b) => b.text).join('\n') : '')
+        : d.choices?.[0]?.message?.content;
       if (c) return { content: c };
-      const reason = d.choices?.[0]?.finish_reason;
-      const hasReasoning = !!d.choices?.[0]?.message?.reasoning;
-      if (reason === 'length' && hasReasoning) {
+      const truncated = isAnthropic
+        ? d.stop_reason === 'max_tokens'
+        : d.choices?.[0]?.finish_reason === 'length' && !!d.choices?.[0]?.message?.reasoning;
+      if (truncated) {
         return { error: '识图模型输出超长被截断（思维链吃光 max_tokens）。请调大 max_tokens 或切换非推理型识图模型。' };
       }
       return { error: '识图返回为空' };
@@ -382,7 +410,12 @@ async function callChat(agent, userContent, request) {
     const reason = data?.choices?.[0]?.finish_reason;
     const hasReasoning = !!msg?.reasoning_content;
     if (reason === 'length' && hasReasoning) {
-      return { error: '回答超长被截断：思维链吃光了 max_tokens。请在 AI 设置里把“最大输出长度”调大到 4000 以上' };
+      const cur = agent.max_tokens ?? 1500;
+      // 已 ≥ 4000 仍吃光：提示继续调大或换非推理型模型，避免「调大到 4000 以上」的误导文案
+      const tip = typeof cur === 'number' && cur >= 4000
+        ? `请在 AI 设置里把“最大输出长度”继续调大（当前 ${cur} 仍被思维链吃光），或换用非推理型模型`
+        : '请在 AI 设置里把“最大输出长度”调大到 4000 以上';
+      return { error: `回答超长被截断：该模型会先“思考”再回答，思维链吃光了 max_tokens。${tip}` };
     }
     return { error: `API 返回异常（无内容，finish_reason=${reason || '?'}）` };
   }

@@ -233,20 +233,47 @@ const chunk = (arr, n) => { const out = []; for (let i = 0; i < arr.length; i +=
  *  mode='ocr' 时提示词为作答文字转写，否则为图形/图表转写 */
 async function callVision(apiKey, baseUrl, model, imgs, mode = 'describe') {
   if (!apiKey || !baseUrl) return { error: '未配置 API key/URL' };
-  const url = baseUrl.replace(/\/+$/, '') + '/chat/completions';
+  // 支持两种多模态协议：OpenAI 兼容（/chat/completions + image_url，GLM 系与各类中转网关）与
+  // Anthropic Messages（/messages + image.source base64，MiniMax 官方 M3.1 等）
+  const isAnthropic = /anthropic/i.test(String(baseUrl));
+  const base = String(baseUrl).replace(/\/+$/, '');
+  const url = isAnthropic ? (base.endsWith('/messages') ? base : base + '/messages') : base + '/chat/completions';
   const text = mode === 'ocr'
     ? '这是一张考生手写或打印的答题纸图片。请逐字准确转写图片中的全部作答文字（包括标点、数字、段落换行）。要求：1) 手写潦草处根据上下文合理推断；2) 不要修改、润色或添加任何内容；3) 只输出识别出的原文，不要任何解释或标记。'
 : mode === 'structure'
 	    ? '这是一张考公题目图片（试卷/练习册/资料截图，可能包含一道或多道题，也可能混有笔记、页码、答题App界面元素等非题目内容）。\n\n请仔细观察整张图片，先筛选出真正的题目，再每道题整理为结构化 JSON。\n\n## 一、题型识别\n\n### 1. 图形推理题\n- 题干：引导语如「从所给的四个选项中，选择最合适的一个填入问号处」「左图为给定的多面体」「左边给定的是正方体的外表面展开图」「把下面的六个图形分为两类」等\n- 选项：\n  - 普通图推 → 图片中选项是图形，无法转写文字时写 {"A. A", "B. B", "C. C", "D. D"}\n  - 分类题（题干含「把下面的六个图形分为两类」）→ 选项是编号文字，原样保留如 "A. ①②④，③⑤⑥"\n- prompt 只放引导语原文，不要描述图形内容\n\n### 2. 定义判断题\n- 题干：一段概念定义 + 问题「根据上述定义，下列…」「以下符合…的是」「以下不属于…的是」\n- 选项：4 个完整的事例描述，逐字转写\n\n### 3. 逻辑判断题\n- 题干：一段论述 + 问题\n- 选项：4 个完整推理\n\n### 4. 判断题（对错题）\n- 选项固定为 ["正确", "错误"]\n- answer 为"正确"或"错误"\n\n### 5. 材料题（资料分析/一拖五）\n- 题干前有材料（图表或文字），材料文字摘要放入 material 字段\n- 每道小题独立一条记录，每条的 material 都填同一材料\n\n## 二、输出格式\n{"questions":[{"prompt":"题干","material":"材料（没有则为空字符串）","options":["A. 选项1","B. 选项2"],"answer":"答案字母，单选如 A / 多选如 ABD / 判断如 正确；图片未显示答案则留空","analysis":"解析（没有则为空字符串）","category":"题目分类（言语理解/判断推理/数量关系/资料分析/常识判断/申论/综应；不确定则留空）"}]}\n\n## 三、要求\n1) 忠实图片内容，不编造、不补全缺失信息；一道题一个对象\n2) 图形推理题选项为占位符 "A. A" "B. B" "C. C" "D. D"，不要编造图形文字\n3) 分类题选项完整保留编号文字，如 "A. ①②④，③⑤⑥"\n4) 材料题的图表文字尽量准确转写进 material\n5) answer 只能从图片中明确标注的答案信息提取；图片未显示答案时必须留空字符串，禁止自行计算\n6) 判断图片中题目的类别并填入 category 字段\n7) 过滤噪音：页码、标题、答题按钮、统计行等非题目内容\n8) 只输出一个 JSON，不要任何其他文字、解释、Markdown 代码块或思考过程'
     : '这是一道考公题目的图片（可能包含题干图形序列和 A/B/C/D 选项图形）。请逐一详细转写图片中的全部内容：题干部分描述每个图形的形状/线条/数量/位置/规律；选项部分标注 A/B/C/D 对应关系。不要遗漏任何图形或文字。';
-  const content = [
-    { type: 'text', text },
-    ...imgs.map((i) => ({ type: 'image_url', image_url: { url: `data:${i.mime};base64,${i.b64}` } })),
-  ];
-  const body = { model, messages: [{ role: 'user', content }], temperature: 0.1, max_tokens: mode === 'structure' ? 8000 : 4000, stream: false };
-  // 推理型模型（mimo/deepseek 等）默认思维链极长，会吃光 max_tokens 导致 content 为空；
-  // 传 reasoning_effort=low 抑制过度思考（网关不支持时自动回退重试）
-  body.reasoning_effort = 'low';
+  let body, headers;
+  if (isAnthropic) {
+    headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}`, 'anthropic-version': '2023-06-01' };
+    body = {
+      model,
+      max_tokens: mode === 'structure' ? 8000 : 4000,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'text', text },
+          // Anthropic Messages 图片块：base64 source（media_type 需为 image/*）
+          ...imgs.map((i) => ({ type: 'image', source: { type: 'base64', media_type: String(i.mime || 'image/png'), data: i.b64 } })),
+        ],
+      }],
+    };
+  } else {
+    headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` };
+    body = {
+      model,
+      messages: [{ role: 'user', content: [
+        { type: 'text', text },
+        ...imgs.map((i) => ({ type: 'image_url', image_url: { url: `data:${i.mime};base64,${i.b64}` } })),
+      ] }],
+      temperature: 0.1,
+      max_tokens: mode === 'structure' ? 8000 : 4000,
+      stream: false,
+    };
+    // 推理型模型（mimo/deepseek 等）默认思维链极长，会吃光 max_tokens 导致 content 为空；
+    // 传 reasoning_effort=low 抑制过度思考（网关不支持时自动回退重试）
+    body.reasoning_effort = 'low';
+  }
   let lastErr = '';
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
@@ -254,7 +281,7 @@ async function callVision(apiKey, baseUrl, model, imgs, mode = 'describe') {
       const t = setTimeout(() => ctrl.abort(), 90000);
       const r = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        headers,
         body: JSON.stringify(body),
         signal: ctrl.signal,
       });
@@ -283,12 +310,17 @@ async function callVision(apiKey, baseUrl, model, imgs, mode = 'describe') {
       }
       const d = await r.json().catch(() => null);
       if (!d) return { error: `识图 API 返回异常：状态 200 但响应体不是有效 JSON（网关异常）` };
-      const c = d.choices?.[0]?.message?.content;
+      // Anthropic Messages 文本在 content[] 的 text 块里（可能夹杂 thinking 块），OpenAI 在 choices[0].message.content
+      const c = isAnthropic
+        ? (Array.isArray(d.content) ? d.content.filter((b) => b.type === 'text' && b.text).map((b) => b.text).join('\n') : '')
+        : d.choices?.[0]?.message?.content;
       if (c) return { content: c };
-      // 推理模型思维链吃光 max_tokens 的典型表现：finish_reason=length 且只有 reasoning_content
-      const reason = d.choices?.[0]?.finish_reason;
-      const hasReasoning = !!d.choices?.[0]?.message?.reasoning;
-      if (reason === 'length' && hasReasoning) {
+      // 推理模型思维链吃光 max_tokens 的典型表现：
+      // OpenAI 系 finish_reason=length 且只有 reasoning_content；Anthropic 系 stop_reason=max_tokens 且无文本块
+      const truncated = isAnthropic
+        ? d.stop_reason === 'max_tokens'
+        : d.choices?.[0]?.finish_reason === 'length' && !!d.choices?.[0]?.message?.reasoning;
+      if (truncated) {
         return { error: '识图模型输出超长被截断（思维链吃光 max_tokens）。请在 AI 设置页把识图转写员 max_tokens 调大到 8000 以上，或切换非推理型识图模型。' };
       }
       return { error: '识图返回为空' };
@@ -2821,7 +2853,7 @@ const server = http.createServer(async (req, res) => {
         // （材料查询与图表图片提取已提前到图片处理之前）
         const prompt = `【所属模块】${q.chapter || '未分类'}\n【题型】${isJudgment ? '判断' : isMulti ? '多选' : '单选'}${hasImage ? '（含图片/图形）' : '（纯文字）'}${materialText ? '（材料题）' : ''}\n【题干】${q.content}\n${opts.length ? `【选项】\n${opts.map((o, i) => `${LETTERS[i]}、${o}`).join('\n')}\n` : ''}${materialText ? `【材料】\n${materialText}\n` : ''}【正确答案】${correctText}\n【用户选择】${selectedText}${correct != null ? `\n【用户回答${correct ? '正确' : '错误'}】` : ''}${imageNote ? `\n${imageNote}\n（以上是 AI 识图转写的图片内容，请基于它解答图形/图表部分）` : ''}${hasImage && !imageNote ? '\n【注意】本题含图片但识图失败，你无法查看图片。请如实说明并提示用户结合题目原图，切勿猜测图形内容。' : ''}\n\n请解析这道题，输出以下结构：\n1. 【考点】本题考察的核心知识点\n2. 【正确项解析】为什么选这个答案\n3. 【错误项排除】其他选项为什么错（判断题/材料题可省略）\n4. 【解题技巧】这类题目的通用解法与避坑提醒\n语言简洁，面向备考学生。`;
         const r = await callAgent(agent, prompt);
-        if (r.error) return json(res, 200, { notice: r.error, content: null });
+        if (r.error) return json(res, 200, { notice: r.error, content: null, imageNote: imageNote || null });
         // 落库缓存：同一题同一作答下次秒回，不重复花钱
         try {
           pdb.prepare('INSERT OR REPLACE INTO ai_explains (question_id, selected, correct, content, image_note, model) VALUES (?, ?, ?, ?, ?, ?)')
