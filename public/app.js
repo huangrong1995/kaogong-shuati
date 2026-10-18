@@ -3793,7 +3793,8 @@ async function explainAllReview(cards, btn) {
         body: JSON.stringify({ questionId: q.id, selected: a.selected, correct: a.correct }),
       }).catch((e) => ({ notice: e.message }));
       if (r.content) {
-        box.innerHTML = `<div class="ab-title">${ico('sparkles', 15)} AI 解析${r.cached ? '<span class="ab-cache">（缓存）</span>' : ''}</div><div class="ab-body">${esc(r.content)}</div>`;
+        const mdMod = await import('./lib/markdown.js');
+        box.innerHTML = `<div class="ab-title">${ico('sparkles', 15)} AI 解析${r.cached ? '<span class="ab-cache">（缓存）</span>' : ''}</div><div class="ab-body md">${mdMod.renderMarkdown(r.content)}</div>`;
       } else {
         box.innerHTML = `<div class="ab-title ab-err">${ico('alert', 15)} ${esc(r.notice || '解析失败')}</div>`;
       }
@@ -3829,8 +3830,10 @@ async function explainReview(q, selected, correct, box, btn) {
         return b;
       })()),
     }).catch((e) => ({ notice: e.message }));
-    if (r.content) box.innerHTML = `<div class="ab-title">${ico('sparkles', 15)} AI 解析${r.cached ? ' <span style="color:var(--muted);font-size:11px">（缓存）</span>' : ''}</div><div style="white-space:pre-wrap;font-size:13.5px;line-height:1.8">${esc(r.content)}</div>`;
-    else box.innerHTML = `<div class="ab-title" style="color:var(--red)">${ico('alert', 15)} ${esc(r.notice || r.error || '解析失败')}</div>`;
+    if (r.content) {
+      const mdMod = await import('./lib/markdown.js');
+      box.innerHTML = `<div class="ab-title">${ico('sparkles', 15)} AI 解析${r.cached ? ' <span style="color:var(--muted);font-size:11px">（缓存）</span>' : ''}</div><div class="ab-body md" style="font-size:13.5px">${mdMod.renderMarkdown(r.content)}</div>`;
+    } else box.innerHTML = `<div class="ab-title" style="color:var(--red)">${ico('alert', 15)} ${esc(r.notice || r.error || '解析失败')}</div>`;
     btn.disabled = false;
     btn.innerHTML = `${ico('sparkles', 15)} AI 解析本题`;
   } else {
@@ -4206,11 +4209,13 @@ async function explainQuestion(q, selected, correct, box) {  const btn = $('#btn
       })()),
     });
     if (r.content) {
+      // markdown 渲染（粗体/列表/标题等），与能力诊断报告一致；原始内容转义后白名单解析
+      const mdMod = await import('./lib/markdown.js');
       let html = `<div class="ab-title">${ico('sparkles', 15)} AI 解析${r.cached ? ' <span style="color:var(--muted);font-size:11px">（缓存）</span>' : ''}</div>`;
       if (r.imageNote) {
         html += `<details style="margin-bottom:8px"><summary style="font-size:13px;color:var(--muted);cursor:pointer">${ico('camera', 13)} 查看 AI 识图转写（含图题）</summary><div style="white-space:pre-wrap;font-size:12.5px;line-height:1.7;color:var(--muted);margin-top:6px;background:var(--bg);padding:8px;border-radius:8px">${esc(r.imageNote.replace(/^【图片转写（AI 识图）】\s*/, ''))}</div></details>`;
       }
-      html += `<div style="white-space:pre-wrap;font-size:14px;line-height:1.8">${esc(r.content)}</div>`;
+      html += `<div class="ab-body md" style="font-size:14px">${mdMod.renderMarkdown(r.content)}</div>`;
       result.innerHTML = html;
     } else {
       result.innerHTML = `<div class="ab-title" style="color:var(--red)">${ico('alert', 15)} ${esc(r.notice || r.error || '解析失败')}</div>`;
