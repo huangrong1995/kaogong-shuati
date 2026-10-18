@@ -164,6 +164,8 @@ const ICO = {
   note: '<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/><path d="M8 13h8M8 16h4"/>',
   chevronLeft: '<path d="m15 18-6-6 6-6"/>',
   chevronRight: '<path d="m9 18 6-6-6-6"/>',
+  chevronDown: '<path d="m6 9 6 6 6-6"/>',
+  chevronUp: '<path d="m18 15-6-6-6 6"/>',
 };
 const ico = (name, size = 18, sw = 2.25) =>
   `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round">${ICO[name] || ''}</svg>`;
@@ -548,11 +550,19 @@ async function renderHome() {
   const view = $('#view');
   view.innerHTML = '<div class="spinner"></div>';
   try {
-    const [subjects, stats] = await Promise.all([
+    const [subjects, stats, recent] = await Promise.all([
       api('/api/subjects'),
       api('/api/records/stats').catch(() => null),
+      api('/api/records/recent?limit=1').catch(() => []),
     ]);
     store.subjects = subjects;
+    // 「继续学习」语义 = 最近练习的去向：最近记录 subject 若为已知内置科目 → 继续刷该科目；
+    // 若是非内置 subject（自定义批次题，subject 是批次自定义名/「自定义」）→ 回自定义题库；
+    // 无记录/未知 → 兜底 subjects[0]（避免依赖 subjects 接口的数据库行序，各端行序不一致）
+    const knownSubjects = new Set(subjects.map((s) => s.subjectName));
+    const recentSubject = (recent && recent[0] && recent[0].subject) || '';
+    const lastSubject = knownSubjects.has(recentSubject) ? recentSubject : '';
+    const lastIsCustom = !!recentSubject && !knownSubjects.has(recentSubject);
     view.innerHTML = '';
 
     // Hero：今日作答卡
@@ -573,7 +583,8 @@ async function renderHome() {
       <button class="hero-cta" id="hero-cta"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3l14 9-14 9V3Z"/></svg> ${hasData ? '继续学习' : '开始刷题'}</button>
     `);
     view.appendChild(hero);
-    $('#hero-cta').onclick = () => { if (store.subjects[0]) renderPractice(store.subjects[0].subjectName, null, null, '0'); };
+    const resume = () => { if (lastIsCustom) renderCustomBank(); else if (lastSubject) renderPractice(lastSubject, null, null, '0'); else if (store.subjects[0]) renderPractice(store.subjects[0].subjectName, null, null, '0'); };
+    $('#hero-cta').onclick = resume;
 
     // 题库网格（试卷封面卡）
     const grid = el('div', 'subject-grid');
@@ -624,7 +635,11 @@ async function renderHome() {
       </div>
     `);
     view.appendChild(quick);
-    $('#quick-random').onclick = () => { if (store.subjects[0]) renderPractice(store.subjects[0].subjectName, null, null, '0'); };
+    // 随机练习：从内置科目里真随机选一个（subjects 接口无固定行序可依赖，用户各端行序不一致）
+    $('#quick-random').onclick = () => {
+      const pick = subjects[Math.floor(Math.random() * subjects.length)] || store.subjects[0];
+      if (pick) renderPractice(pick.subjectName, null, null, '0');
+    };
     $('#quick-wrong').onclick = () => renderWrong();
     $('#quick-fav').onclick = () => renderFavorites();
     $('#quick-note').onclick = () => renderNotes();
@@ -4709,16 +4724,29 @@ function renderAbilityContent(view, m, settings) {
   view.appendChild(radarCard);
   if (!empty) drawAbilityRadar(radarCard.querySelector('#ab-radar'), m);
 
-  // 六大模块卡网格（点击卡头展开子模块/细分考点；训练按钮走事件委托）
+  // 六大模块卡网格（有子模块的默认展开显示各子模块正确率；整行可点训练，训练按钮走事件委托）
   const grid = el('div', 'ability-modules');
   for (const g of m.groups) grid.appendChild(abilityModuleEl(g));
   view.appendChild(grid);
   grid.addEventListener('click', (e) => {
-    const btn = e.target.closest('.am-train, .as-train, .al-train');
-    if (!btn) return;
-    const card = e.target.closest('.ability-module');
-    if (!card) return;
-    abilityTrain(card.dataset.group, btn.dataset.sub || null, btn.dataset.leaf || null);
+    // 细分考点行 → 训练该考点（data-leaf）；子模块行 → 训练该子模块；模块卡「针对性训练」按钮 → 整模块
+    const leafRow = e.target.closest('.ability-leaf-row');
+    if (leafRow) {
+      const card = leafRow.closest('.ability-module');
+      if (card) abilityTrain(card.dataset.group, leafRow.dataset.sub || null, leafRow.dataset.leaf || null);
+      return;
+    }
+    const subRow = e.target.closest('.ability-sub-row');
+    if (subRow) {
+      const card = subRow.closest('.ability-module');
+      if (card) abilityTrain(card.dataset.group, subRow.dataset.sub || null, null);
+      return;
+    }
+    const btn = e.target.closest('.am-train');
+    if (btn) {
+      const card = btn.closest('.ability-module');
+      if (card) abilityTrain(card.dataset.group, null, null);
+    }
   });
 
   // AI 诊断区
@@ -4741,9 +4769,12 @@ function drawAbilityRadar(canvas, m) {
   const values = m.groups.map((g) => g.rate / 100);
   const lineValues = m.groups.map((g) => g.line / 100);
   const met = m.groups.map((g) => g.met);
+  const insuff = m.groups.map((g) => g.total < 5); // 数据不足轴：不画假 0% 胶囊
+  let firstPaint = true;
   const paint = () => {
     if (store.state.view !== 'ability') return; // 已离开能力视图：不再重绘脱离文档的 canvas
-    radarDraw().then((drawRadar) => drawRadar(canvas, { labels, values, lineValues, met })).catch(() => {});
+    radarDraw().then((drawRadar) => drawRadar(canvas, { labels, values, lineValues, met, insuff, animate: firstPaint })).catch(() => {});
+    firstPaint = false; // resize 重绘不重播展开动画
   };
   paint();
   if (abResizeH) window.removeEventListener('resize', abResizeH);
@@ -4800,24 +4831,33 @@ function abilityBadge(g) {
 
 function abilityModuleEl(g) {
   const badge = abilityBadge(g);
-  const card = el('div', `card ability-module${g.subs.length ? ' expandable' : ''}`, `
+  const hasSubs = g.subs.length > 0;
+  const card = el('div', `card ability-module${hasSubs ? ' expandable' : ''}`, `
     <div class="am-head">
       <div class="am-name">${esc(g.group)}</div>
       <div class="am-stat">
         <span class="am-rate">${g.total ? g.rate : '—'}%</span>${badge}
       </div>
     </div>
-    <div class="am-meta">${g.total ? `已练 ${g.total} 题 · 答对 ${g.correct} 题` : '暂无做题记录'}</div>
-    <div class="am-actions"><button class="btn btn-ghost am-train">${ico('zap', 14)} 针对性训练</button></div>
-    ${g.subs.length ? `<div class="am-body" style="display:none">${g.subs.map((sg) => abilitySubRows(g, sg)).join('')}</div>` : ''}
+    <div class="am-meta">${g.total ? `已练 ${g.total} 题 · 答对 ${g.correct} 题${hasSubs ? ` · ${g.subs.length} 个子模块` : ''}` : '暂无做题记录'}</div>
+    <div class="am-actions">
+      <button class="btn btn-ghost am-train">${ico('zap', 14)} 针对性训练</button>
+      ${hasSubs ? `<button class="btn btn-ghost am-expand"><span class="am-expand-caret">${ico('chevronDown', 13)}</span><span class="am-expand-label">展开子模块</span></button>` : ''}
+    </div>
+    ${hasSubs ? `<div class="am-body" hidden>${g.subs.map((sg) => abilitySubRows(g, sg)).join('')}</div>` : ''}
   `);
   card.dataset.group = g.group;
-  if (g.subs.length) {
-    card.querySelector('.am-head').onclick = () => {
-      const body = card.querySelector('.am-body');
-      const open = body.style.display === 'none';
-      body.style.display = open ? '' : 'none';
-      card.classList.toggle('open', open);
+  if (hasSubs) {
+    const body = card.querySelector('.am-body');
+    card.querySelector('.am-expand').onclick = (e) => {
+      e.stopPropagation(); // 按钮不触发放置在卡上的其它委托
+      const willOpen = body.hidden;
+      body.hidden = !willOpen;
+      card.classList.toggle('open', willOpen);
+      const caret = card.querySelector('.am-expand-caret');
+      if (caret) caret.innerHTML = ico(willOpen ? 'chevronUp' : 'chevronDown', 13);
+      const lbl = card.querySelector('.am-expand-label');
+      if (lbl) lbl.textContent = willOpen ? '收起子模块' : '展开子模块';
     };
   }
   return card;
@@ -4827,11 +4867,11 @@ function abilitySubRows(g, sg) {
   const rate = sg.rate != null ? sg.rate : (sg.total ? Math.round((sg.correct / sg.total) * 100) : 0);
   const leafs = (sg.leaves || []).map((l) => abilityLeafRow(g, sg, l)).join('');
   return `
-    <div class="ability-sub-row">
+    <div class="ability-sub-row" data-sub="${esc(sg.sub)}" role="button" tabindex="0" title="点击组织该子模块针对性训练">
       <div class="as-top">
         <span class="as-name">${esc(sg.sub)}</span>
         <span class="as-rate">${sg.total ? `${rate}%` : '—'}<span class="as-n">（答对 ${sg.correct}/${sg.total}）</span></span>
-        <button class="btn btn-sm as-train" data-sub="${esc(sg.sub)}">${ico('zap', 13)} 训练</button>
+        <button class="btn btn-sm as-train">${ico('zap', 13)} 训练</button>
       </div>
       <div class="as-track"><div class="as-fill" style="width:${sg.total ? rate : 0}%"></div></div>
     </div>
@@ -4842,10 +4882,10 @@ function abilitySubRows(g, sg) {
 function abilityLeafRow(g, sg, l) {
   const rate = l.rate != null ? l.rate : (l.total ? Math.round((l.correct / l.total) * 100) : 0);
   return `
-    <div class="ability-leaf-row">
+    <div class="ability-leaf-row" data-sub="${esc(sg.sub)}" data-leaf="${esc(l.leaf)}" role="button" tabindex="0" title="点击组织该细分考点针对性训练">
       <span class="al-name">${esc(l.leaf)}</span>
       <span class="al-rate">${l.total ? `${rate}%` : '—'}<span class="as-n">（答对 ${l.correct}/${l.total}）</span></span>
-      <button class="btn btn-sm al-train" data-sub="${esc(sg.sub)}" data-leaf="${esc(l.leaf)}">${ico('zap', 13)} 训练</button>
+      <button class="btn btn-sm al-train">${ico('zap', 13)} 训练</button>
     </div>
   `;
 }
@@ -4860,6 +4900,7 @@ async function abilityTrain(group, sub, leaf) {
   if (!qs.length) { toast('该考点暂无题可练'); return; }
   const topLayer = store.navStack[store.navStack.length - 1];
   store.navStack.push((topLayer && topLayer.name === 'ability') ? { ...topLayer } : { name: 'ability' });
+  $('#app-title').textContent = `公务员·行测 · 针对性训练${sub && sub !== '全部' ? `（${sub}${leaf ? ` · ${leaf}` : ''}）` : ''}`;
   enterQuiz(qs, '公务员·行测', 'practice', null, '0', null, false);
 }
 
@@ -4880,7 +4921,11 @@ async function abilityDiagnose() {
       body: JSON.stringify({ target: abilityTarget(s) / 100, exam: s.exam, k: s.k }),
     });
     if (r && r.content) {
-      box.innerHTML = `<div class="ai-diag">${esc(r.content)}</div>
+      // 报告为 markdown：转义后白名单渲染（标题/列表/粗体/代码块等），原始 HTML 不会注入
+      const mdMod = await import('./lib/markdown.js');
+      const html = mdMod.renderMarkdown(r.content);
+      box.innerHTML = `<div class="ai-diag md">${html}
+        </div>
         <div class="action-row" style="margin-top:10px">
           <button class="btn btn-ghost" id="ab-diag-copy">${ico('clipboard', 14)} 复制报告</button>
         </div>`;
