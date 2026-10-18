@@ -81,7 +81,7 @@ if (isLocalMode()) {
     // 超时参数（毫秒）：境外网关在弱网/被墙场景下 TCP 连接可能挂起，必须兜底，
     // 否则 CapacitorHttp/fetch 会无限等待，界面看起来「卡死」。
     const CONNECT_TIMEOUT_MS = 15000; // 连不上（DNS/握手/被墙）快速报错
-    const READ_TIMEOUT_MS = 90000;   // 单次读取上限 90s（实测模型约 27s 返回）；总等待另有 3 分钟硬上限
+    const READ_TIMEOUT_MS = 300000;   // 单次读取上限 5 分钟（错题诊断/申论批改等重调用输出长，90s 不够）；总等待另有 3 分钟硬上限（识图）
     if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.CapacitorHttp) {
       const CapacitorHttp = window.Capacitor.Plugins.CapacitorHttp;
       request = async function (url, opts) {
