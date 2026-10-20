@@ -3442,7 +3442,11 @@ const server = http.createServer(async (req, res) => {
   if (!file.startsWith(PUBLIC_DIR)) return err(res, 403, '禁止访问');
   if (!fs.existsSync(file) || fs.statSync(file).isDirectory()) file = path.join(PUBLIC_DIR, 'index.html');
   const ext = path.extname(file).toLowerCase();
-  res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream' });
+  const headers = { 'Content-Type': MIME[ext] || 'application/octet-stream' };
+  // 应用自身的 html/js/css 必须 no-cache：部署在 Cloudflare Tunnel 后面，缺省会被边缘缓存，
+  // 导致发版后用户手机仍拿到旧版页面/样式（实测 style.css 陈旧）。图片/vendor 等不可变资源保持默认。
+  if (['.html', '.js', '.mjs', '.css'].includes(ext)) headers['Cache-Control'] = 'no-cache';
+  res.writeHead(200, headers);
   fs.createReadStream(file).pipe(res);
 });
 
