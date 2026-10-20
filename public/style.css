@@ -142,6 +142,7 @@ h1, h2, h3, .hs-num, .stat-card .num { font-family: inherit; font-variant-numeri
 #topbar {
   position: fixed; top: 0; left: 0; right: 0; z-index: 100;
   display: flex; align-items: center; gap: 6px;
+  justify-content: space-between; /* 标题绝对居幕后两侧按钮各居一端 */
   height: var(--topbar-h);
   padding: 0 10px;
   background: var(--card); /* 旧内核回退（无 color-mix 时用不透明卡片色） */
@@ -151,7 +152,10 @@ h1, h2, h3, .hs-num, .stat-card .num { font-family: inherit; font-variant-numeri
   border-bottom: 1px solid var(--border);
 }
 #topbar h1 {
-  flex: 1; text-align: center;
+  position: absolute; left: 50%; transform: translateX(-50%);
+  /* 右侧有账号+主题两个按钮时标题仍居中；max-width 预留两侧按钮空间不遮挡 */
+  max-width: calc(100% - 96px);
+  text-align: center;
   font-size: 17px; font-weight: 700; letter-spacing: 0;
   font-family: var(--font-display); /* 品牌名宋体落款 */
   color: var(--text);
@@ -168,7 +172,7 @@ h1, h2, h3, .hs-num, .stat-card .num { font-family: inherit; font-variant-numeri
 #topbar .icon-btn:hover { background: var(--primary-soft); }
 #topbar .icon-btn:active { transform: scale(.92); }
 #topbar .icon-btn.spacer { visibility: hidden; }
-#topbar-right { width: 36px; display: flex; justify-content: flex-end; }
+#topbar-right { display: flex; justify-content: flex-end; gap: 2px; }
 
 /* ---------- 主体 ---------- */
 #view {
@@ -1461,3 +1465,12 @@ textarea.field { resize: vertical; line-height: 1.6; }
   .ability-modules { grid-template-columns: repeat(3, 1fr); gap: 14px; }
   .ability-modules > .card { margin-bottom: 0; }
 }
+
+/* ---------- 登录 / 账号 ---------- */
+.auth-tabs { display: flex; background: var(--bg-soft); border-radius: 12px; padding: 4px; margin-bottom: 18px; }
+.auth-tab { flex: 1; border: 0; background: transparent; color: var(--text-2); font-size: 14.5px; font-weight: 600; padding: 10px 0; border-radius: 9px; cursor: pointer; transition: background .15s ease, color .15s ease; }
+.auth-tab.active { background: var(--card); color: var(--text); box-shadow: 0 1px 4px rgba(0,0,0,.12); }
+.auth-row { display: flex; flex-direction: column; gap: 6px; }
+.auth-row label { font-size: 13px; font-weight: 600; color: var(--text-2); }
+.auth-err { background: var(--red-soft); color: var(--red); font-size: 13px; line-height: 1.5; border-radius: 8px; padding: 9px 12px; }
+.auth-hint { font-size: 12.5px; color: var(--text-2); line-height: 1.6; }

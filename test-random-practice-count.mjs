@@ -1,37 +1,28 @@
 // 随机练习题量回归测试（2026-08 用户要求）：
 // 行测/职测固定 15 题；言语理解与表达/判断推理/资料分析（材料组题）15-20 封顶；申论/综应固定 2 题。
-// 运行：node --test test-random-practice-count.mjs（自动起 server 于随机端口，测完关闭）
+// 运行：node --test test-random-practice-count.mjs（自动起 server 于随机端口 + 独立临时库，测完关闭）
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
-import net from 'node:net';
 import { DatabaseSync } from 'node:sqlite';
 import { createLocalApi } from './lib/local-queries.mjs';
+import { startAuthServer, registerUser, authFetch, makeTempDb } from './auth-test-helper.mjs';
 
 const PORT = 3900 + Math.floor(Math.random() * 200);
-let server, base;
+let server, base, dbPath, cookie;
 
 before(async () => {
-  await new Promise((resolve, reject) => {
-    const srv = net.createServer();
-    srv.listen(PORT, () => { srv.close(resolve); });
-    srv.on('error', reject);
-  });
-  server = spawn(process.execPath, ['server.mjs', String(PORT)], { stdio: 'ignore' });
-  // 轮询等待服务就绪（替代固定 sleep，避免并发跑多个 server 时启动慢导致误报）
-  const deadline = Date.now() + 20000;
-  while (Date.now() < deadline) {
-    try { const r = await fetch(`http://localhost:${PORT}/`); if (r.ok) break; } catch {}
-    await new Promise((r) => setTimeout(r, 200));
-  }
-  base = `http://localhost:${PORT}`;
+  dbPath = makeTempDb('random-count');
+  const s = await startAuthServer({ prefix: 'random-count', port: PORT });
+  server = s.server; base = s.base;
+  const { cookie: ck } = await registerUser(s.base, { username: 'counttester', inviteCode: s.bootCode });
+  cookie = ck;
 });
 
 after(() => { server?.kill(); });
 
 const enc = encodeURIComponent;
 async function count(path) {
-  const res = await fetch(base + path);
+  const res = await authFetch(base, cookie)(path);
   if (!res.ok) {
     const body = await res.text().catch(() => '');
     throw new Error(`请求失败: ${path} -> ${res.status} body=${body.slice(0, 400)}`);

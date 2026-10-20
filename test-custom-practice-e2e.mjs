@@ -1,31 +1,24 @@
 // test-custom-practice-e2e.mjs — 自定义刷题筛选 · 背题模式前端交互 e2e（Playwright + 系统 Edge）
-// 运行：node test-custom-practice-e2e.mjs（自动起 server 于随机端口，测完关闭；需 npm i -D playwright-core）
-// 覆盖：入口按钮（行测有/申论无）→ 面板设置（模式/年份/难度）→ 确定 → 专项练习模块刷题按筛选出题（URL 参数）
-//      → 背题模式点选判分/不跳题/锁定/最后不自动交卷 → 做题模式自动跳题
+// 运行：node test-custom-practice-e2e.mjs（自动起 server 于随机端口 + 独立临时库，测完关闭；需 npm i -D playwright-core）
+// 账号体系：先经 API 注册测试用户，把 sid cookie 注入浏览器上下文 → 首页直接可用（不走登录 UI）
+// Edge 获取：本机无 Linux Edge，测试通过 CDP 连接 Windows 侧常驻的 Edge（127.0.0.1:9222，同前的 radar 像素校验方案）
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
-import net from 'node:net';
 import { chromium } from 'playwright-core';
+import { startAuthServer, registerUser } from './auth-test-helper.mjs';
 
 const PORT = 4500 + Math.floor(Math.random() * 200);
 let server, browser, page;
 
 before(async () => {
-  await new Promise((resolve, reject) => {
-    const srv = net.createServer();
-    srv.listen(PORT, () => { srv.close(resolve); });
-    srv.on('error', reject);
-  });
-  server = spawn(process.execPath, ['server.mjs', String(PORT)], { stdio: 'ignore' });
-  const deadline = Date.now() + 20000;
-  while (Date.now() < deadline) {
-    try { const r = await fetch(`http://localhost:${PORT}/`); if (r.ok) break; } catch {}
-    await new Promise((r) => setTimeout(r, 200));
-  }
-  browser = await chromium.launch({ channel: 'msedge', headless: true });
-  const ctx = await browser.newContext({ viewport: { width: 420, height: 900 } }); // 手机尺寸
-  page = await ctx.newPage();
+  const s = await startAuthServer({ prefix: 'custom-e2e', port: PORT });
+  server = s.server;
+  const { sid } = await registerUser(s.base, { username: 'e2euser', inviteCode: s.bootCode });
+  const port = Number(new URL(s.base).port);
+  browser = await chromium.connectOverCDP('http://127.0.0.1:9222');
+  page = await browser.newPage(); // CDP 侧新 context（隔离出的隐式 context，复用已有 Edge 进程）
+  await page.context().addCookies([{ name: 'sid', value: sid, url: `http://localhost:${port}` }]);
+  await page.setViewportSize({ width: 420, height: 900 }); // 手机尺寸
 });
 
 after(async () => { await browser?.close(); server?.kill(); });

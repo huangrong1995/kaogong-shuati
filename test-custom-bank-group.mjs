@@ -8,37 +8,28 @@
 // 运行：node --test test-custom-bank-group.mjs
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
-import net from 'node:net';
+import { startAuthServer, registerUser, authFetch } from './auth-test-helper.mjs';
 
 const PORT = 4800 + Math.floor(Math.random() * 200);
-let server, base;
+let server, base, cookie;
 const createdBatches = [];
 
 before(async () => {
-  await new Promise((resolve, reject) => {
-    const srv = net.createServer();
-    srv.listen(PORT, () => { srv.close(resolve); });
-    srv.on('error', reject);
-  });
-  server = spawn(process.execPath, ['server.mjs', String(PORT)], { stdio: 'ignore' });
-  const deadline = Date.now() + 20000;
-  while (Date.now() < deadline) {
-    try { const r = await fetch(`http://localhost:${PORT}/`); if (r.ok) break; } catch {}
-    await new Promise((r) => setTimeout(r, 200));
-  }
-  base = `http://localhost:${PORT}`;
+  const s = await startAuthServer({ prefix: 'custom-bank-group', port: PORT });
+  server = s.server; base = s.base;
+  const { cookie: ck } = await registerUser(s.base, { username: 'groupter', inviteCode: s.bootCode });
+  cookie = ck;
 });
 
 after(async () => {
-  // 清理本次测试创建的批次（级联删题），避免污染真用户库
+  // 清理本次测试创建的批次（级联删题），避免污染临时库（保留给其它断言也无妨，但保持整洁）
   for (const id of createdBatches) {
-    try { await fetch(`${base}/api/custom/batch?id=${id}`, { method: 'DELETE' }); } catch {}
+    try { await authFetch(base, cookie)(`/api/custom/batch?id=${id}`, { method: 'DELETE' }); } catch {}
   }
   server?.kill();
 });
 
-const post = (path, body) => fetch(base + path, {
+const post = (path, body) => authFetch(base, cookie)(path, {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify(body),
@@ -64,7 +55,7 @@ function sampleQuestions() {
 
 test('分组：同组题出题共用材料 + 第 n/m 小问 + 组内连续', async () => {
   const b = await importBatch('材料分组测试A-' + Date.now(), sampleQuestions());
-  const qs = await fetch(`${base}/api/custom/questions?batch_id=${b.id}`).then((r) => r.json());
+  const qs = await authFetch(base, cookie)(`/api/custom/questions?batch_id=${b.id}`).then((r) => r.json());
   assert.equal(qs.questions.length, 5);
   // 1,2 归一组（2 号带材料）
   const g = await post('/api/custom/questions/group', { ids: [qs.questions[0].id, qs.questions[1].id], action: 'group' });
@@ -74,7 +65,7 @@ test('分组：同组题出题共用材料 + 第 n/m 小问 + 组内连续', asy
   const g2 = await post('/api/custom/questions/group', { ids: [qs.questions[4].id, qs.questions[3].id], action: 'group' });
   const gidB = g2.groupId;
 
-  const p = await fetch(`${base}/api/custom/practice?batch_id=${b.id}`).then((r) => r.json());
+  const p = await authFetch(base, cookie)(`/api/custom/practice?batch_id=${b.id}`).then((r) => r.json());
   const list = p.questions;
   assert.equal(list.length, 5);
 
@@ -103,11 +94,11 @@ test('分组：同组题出题共用材料 + 第 n/m 小问 + 组内连续', asy
 
 test('取消分组：出题恢复逐题独立材料、无小问标记', async () => {
   const b = await importBatch('材料分组测试B-' + Date.now(), sampleQuestions());
-  const qs = await fetch(`${base}/api/custom/questions?batch_id=${b.id}`).then((r) => r.json());
+  const qs = await authFetch(base, cookie)(`/api/custom/questions?batch_id=${b.id}`).then((r) => r.json());
   const [q1, q2] = qs.questions.slice(0, 2);
   const g = await post('/api/custom/questions/group', { ids: [q1.id, q2.id], action: 'group' });
   await post('/api/custom/questions/group', { ids: [q1.id], action: 'ungroup' });
-  const p = await fetch(`${base}/api/custom/practice?batch_id=${b.id}`).then((r) => r.json());
+  const p = await authFetch(base, cookie)(`/api/custom/practice?batch_id=${b.id}`).then((r) => r.json());
   const a = p.questions.find((q) => q.content === '问题一');
   const bq = p.questions.find((q) => q.content === '问题二');
   assert.ok(!a.groupId && !a.groupTotal, '移出组的题不应有分组标记');
@@ -116,22 +107,22 @@ test('取消分组：出题恢复逐题独立材料、无小问标记', async ()
 
 test('编辑单题（不带 material_id）不丢分组；显式传可改', async () => {
   const b = await importBatch('材料分组测试C-' + Date.now(), sampleQuestions());
-  const qs = await fetch(`${base}/api/custom/questions?batch_id=${b.id}`).then((r) => r.json());
+  const qs = await authFetch(base, cookie)(`/api/custom/questions?batch_id=${b.id}`).then((r) => r.json());
   const q1 = qs.questions[0], q2 = qs.questions[1];
   const g = await post('/api/custom/questions/group', { ids: [q1.id, q2.id], action: 'group' });
   // 普通编辑（无 material_id 字段）→ 分组保留
-  await fetch(`${base}/api/custom/question?id=${q1.id}`, {
+  await authFetch(base, cookie)(`/api/custom/question?id=${q1.id}`, {
     method: 'PUT', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ id: q1.id, prompt: '问题一改', material: '', options: ['A. x', 'B. y'], answer: 'A', answer_index: 0, analysis: '' }),
   }).then((r) => r.json());
-  let after = await fetch(`${base}/api/custom/questions?batch_id=${b.id}`).then((r) => r.json());
+  let after = await authFetch(base, cookie)(`/api/custom/questions?batch_id=${b.id}`).then((r) => r.json());
   assert.equal(after.questions[0].material_id, g.groupId, '普通编辑不应清空分组');
   // 显式传 material_id='' → 清空分组
-  await fetch(`${base}/api/custom/question?id=${q1.id}`, {
+  await authFetch(base, cookie)(`/api/custom/question?id=${q1.id}`, {
     method: 'PUT', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ id: q1.id, material_id: '' }),
   }).then((r) => r.json());
-  after = await fetch(`${base}/api/custom/questions?batch_id=${b.id}`).then((r) => r.json());
+  after = await authFetch(base, cookie)(`/api/custom/questions?batch_id=${b.id}`).then((r) => r.json());
   assert.equal(after.questions[0].material_id, '', '显式 material_id="" 应清空分组');
 });
 
@@ -225,7 +216,7 @@ test('按材料内容自动分组：相同材料文本自动归组（≥2 题）
   assert.equal(r.groupCount, 1, `应只 1 组，实际 ${r.groupCount}`);
   assert.equal(r.total, 5);
 
-  const p = await fetch(`${base}/api/custom/practice?batch_id=${b.id}`).then((r) => r.json());
+  const p = await authFetch(base, cookie)(`/api/custom/practice?batch_id=${b.id}`).then((r) => r.json());
   const groupedQs = p.questions.filter((q) => q.groupId);
   assert.equal(groupedQs.length, 3, '应 3 题有分组');
   assert.equal(groupedQs[0].groupTotal, 3);
@@ -284,21 +275,21 @@ test('出题 count 参数：限制题数；保护材料组完整（不切中间�
     { prompt: 'B3', material: '', options: ['A'], answer: 'A' },
   ]);
   // 先把 A1/A2/A3 归为一组
-  const qs = await fetch(`${base}/api/custom/questions?batch_id=${b.id}`).then((r) => r.json());
+  const qs = await authFetch(base, cookie)(`/api/custom/questions?batch_id=${b.id}`).then((r) => r.json());
   await post('/api/custom/questions/group', { ids: [qs.questions[0].id, qs.questions[1].id, qs.questions[2].id], action: 'group' });
 
   // count=2 → A1/A2 在第 2 题停下，但 A2 在材料组中间（A1/A2/A3），应自动扩到 A3
-  const p = await fetch(`${base}/api/custom/practice?batch_id=${b.id}&count=2`).then((r) => r.json());
+  const p = await authFetch(base, cookie)(`/api/custom/practice?batch_id=${b.id}&count=2`).then((r) => r.json());
   assert.equal(p.questions.length, 3, `材料组扩展后应 3 题，实际 ${p.questions.length}`);
   assert.equal(p.questions[0].content, 'A1');
   assert.equal(p.questions[2].content, 'A3');
 
   // count=0 → 不传 count 时不截断（缺省行为：返回全部 6 题）
-  const p0 = await fetch(`${base}/api/custom/practice?batch_id=${b.id}`).then((r) => r.json());
+  const p0 = await authFetch(base, cookie)(`/api/custom/practice?batch_id=${b.id}`).then((r) => r.json());
   assert.equal(p0.questions.length, 6);
 
   // count=100 → 全部 6 题
-  const p100 = await fetch(`${base}/api/custom/practice?batch_id=${b.id}&count=100`).then((r) => r.json());
+  const p100 = await authFetch(base, cookie)(`/api/custom/practice?batch_id=${b.id}&count=100`).then((r) => r.json());
   assert.equal(p100.questions.length, 6);
 });
 

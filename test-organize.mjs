@@ -3,45 +3,35 @@
 //   1. 写入即归档：内置题按科目归大模块（行测/职测/申论/综应）+ 章节树大模块作为子模块；custom 题归「自定义题库」
 //   2. 列表按 group/sub 过滤；分组总览 groups 固定 5 大模块
 //   3. 一键整理 organize：历史未分类（group_key 为空）自动归类，幂等可重复
-// 运行：node --test test-organize.mjs
+// 运行：node --test test-organize.mjs（自动起 server 于随机端口 + 独立临时库，测完关闭）
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
-import net from 'node:net';
 import { DatabaseSync } from 'node:sqlite';
+import { startAuthServer, registerUser, authFetch } from './auth-test-helper.mjs';
 
-const PORT = 4900 + Math.floor(Math.random() * 200);
-let server, base;
+let server, base, cookie;
 const createdBatches = [];
 const cleanedRecords = [];
 
 before(async () => {
-  await new Promise((resolve, reject) => {
-    const srv = net.createServer();
-    srv.listen(PORT, () => { srv.close(resolve); });
-    srv.on('error', reject);
-  });
-  server = spawn(process.execPath, ['server.mjs', String(PORT)], { stdio: 'ignore' });
-  const deadline = Date.now() + 20000;
-  while (Date.now() < deadline) {
-    try { const r = await fetch(`http://localhost:${PORT}/`); if (r.ok) break; } catch {}
-    await new Promise((r) => setTimeout(r, 200));
-  }
-  base = `http://localhost:${PORT}`;
+  const s = await startAuthServer({ prefix: 'organize' });
+  server = s.server; base = s.base;
+  const { cookie: ck } = await registerUser(s.base, { username: 'organizer', inviteCode: s.bootCode });
+  cookie = ck;
 });
 
 after(async () => {
-  // 清理测试产生的数据：错题记录软删（archived）+ 自定义批次级联删题，避免污染真用户库
+  // 清理测试产生的数据：错题记录软删（archived）+ 自定义批次级联删题（独立临时库，防御性清理）
   for (const qid of cleanedRecords) {
-    try { await fetch(`${base}/api/records/wrong`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ questionId: qid }) }); } catch {}
+    try { await authFetch(base, cookie)(`/api/records/wrong`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ questionId: qid }) }); } catch {}
   }
   for (const id of createdBatches) {
-    try { await fetch(`${base}/api/custom/batch?id=${id}`, { method: 'DELETE' }); } catch {}
+    try { await authFetch(base, cookie)(`/api/custom/batch?id=${id}`, { method: 'DELETE' }); } catch {}
   }
   server?.kill();
 });
 
-const post = (path, body) => fetch(base + path, {
+const post = (path, body) => authFetch(base, cookie)(path, {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify(body),
@@ -49,7 +39,7 @@ const post = (path, body) => fetch(base + path, {
 
 test('server：写入即归档 + group/sub 过滤 + 总览 + 一键整理', async () => {
   // 取一道真实行测题，提交一条错题记录（写入即归档）
-  const p = await fetch(`${base}/api/practice?subject=公务员·行测&n=5&mock=0&year=all`).then((r) => r.json());
+  const p = await authFetch(base, cookie)(`/api/practice?subject=公务员·行测&n=5&mock=0&year=all`).then((r) => r.json());
   const qs = Array.isArray(p) ? p : (p.questions || p.list || []);
   assert.ok(qs.length > 0, '出题失败');
   const q = qs[0];
@@ -57,11 +47,11 @@ test('server：写入即归档 + group/sub 过滤 + 总览 + 一键整理', asyn
   assert.equal(rec.ok, true);
   cleanedRecords.push(q.id);
   // 列表按 group 过滤命中（该题来自行测并映射到章节树大模块）
-  const w = await fetch(`${base}/api/records/wrong?group=${encodeURIComponent('公务员·行测')}&limit=50`).then((r) => r.json());
+  const w = await authFetch(base, cookie)(`/api/records/wrong?group=${encodeURIComponent('公务员·行测')}&limit=50`).then((r) => r.json());
   const hit = (w.list || []).find((x) => String(x.questionId) === String(q.id));
   assert.ok(hit, `行测组应含新错题: ${JSON.stringify(w.list && w.list.slice(0, 2))}`);
   // 总览：固定 5 大模块在前 + 子模块非空（真实库可能有历史未分类记录 → 第 6 组 key=''）
-  const g = await fetch(`${base}/api/records/wrong/groups`).then((r) => r.json());
+  const g = await authFetch(base, cookie)(`/api/records/wrong/groups`).then((r) => r.json());
   assert.deepEqual(g.slice(0, 5).map((x) => x.key), ['公务员·行测', '事业编·职测', '公务员·申论', '事业编·综应', 'custom'], 'groups 固定 5 组顺序');
   if (g.length > 5) assert.equal(g[5].key, '', '第 6 组应为未分类');
   const xc = g.find((x) => x.key === '公务员·行测');
@@ -80,16 +70,16 @@ test('server：自定义题归「自定义题库」（不分子模块）', async
   assert.ok(b.id, `导入失败: ${JSON.stringify(b)}`);
   createdBatches.push(Number(b.id));
   // 题目 id 才是 custom-N 的 N（批次 id 与题 id 不一定相同）
-  const qs = await fetch(`${base}/api/custom/questions?batch_id=${b.id}`).then((r) => r.json());
+  const qs = await authFetch(base, cookie)(`/api/custom/questions?batch_id=${b.id}`).then((r) => r.json());
   const qid = qs.questions[0].id;
   // 判错提交记录 → 自动归档 custom 组
   const ck = await post('/api/custom/check', { questionId: `custom-${qid}`, batchId: b.id, selected: [1], chapter: b.name });
   assert.equal(ck.ok, false);
   cleanedRecords.push(`custom-${qid}`);
-  const w = await fetch(`${base}/api/records/wrong?group=custom`).then((r) => r.json());
+  const w = await authFetch(base, cookie)(`/api/records/wrong?group=custom`).then((r) => r.json());
   const hit = (w.list || []).find((x) => String(x.questionId) === `custom-${qid}`);
   assert.ok(hit, `自定义组应含该题: ${JSON.stringify(w.list && w.list.slice(0, 2))}`);
-  const g = await fetch(`${base}/api/records/wrong/groups`).then((r) => r.json());
+  const g = await authFetch(base, cookie)(`/api/records/wrong/groups`).then((r) => r.json());
   const cu = g.find((x) => x.key === 'custom');
   assert.ok(cu && cu.count >= 1, `自定义组应含该题: ${JSON.stringify(cu)}`);
   // 自定义题固定不分子模块：组内任意子模块（仅历史数据可能残留 sub_key）不影响归组

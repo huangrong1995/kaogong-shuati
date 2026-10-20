@@ -100,14 +100,11 @@ ok('checkAnswer 空选不崩', typeof r1.ok === 'boolean');
 
 // ---- server 对照（可选） ----
 if (process.argv.includes('--with-server')) {
-  const { spawn } = await import('node:child_process');
-  const { once } = await import('node:events');
-  const srv = spawn(process.execPath, ['server.mjs', '3199'], { stdio: ['ignore', 'pipe', 'pipe'] });
-  await new Promise((res) => {
-    srv.stdout.on('data', (d) => { if (String(d).includes('http')) res(); });
-    setTimeout(res, 2500);
-  });
-  const get = async (u) => (await fetch('http://127.0.0.1:3199' + u)).json();
+  const { startAuthServer, registerUser, authFetch } = await import('./auth-test-helper.mjs');
+  const s = await startAuthServer({ prefix: 'local-queries' });
+  const { cookie } = await registerUser(s.base, { username: 'querytester', inviteCode: s.bootCode });
+  const apiWithAuth = authFetch(s.base, cookie);
+  const get = async (u) => (await apiWithAuth(u)).json();
   try {
     const sSub = await get('/api/subjects');
     const lSub = api.subjects();
@@ -126,7 +123,7 @@ if (process.argv.includes('--with-server')) {
     const lPr = api.practice('公务员·行测', { n: 8 });
     ok('对照 practice 字段', sPr.every((x) => 'groupId' in x) && lPr.every((x) => 'groupId' in x) && sPr[0].content === lPr[0].content || true, '（随机题不同卷，仅核对结构）');
   } finally {
-    srv.kill();
+    s.server.kill();
   }
 }
 

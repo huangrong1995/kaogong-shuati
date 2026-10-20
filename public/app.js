@@ -91,6 +91,14 @@ const api = async (path, opts) => {
     return handler(path, opts);
   }
   const res = await fetch(path, opts);
+  if (res.status === 401) {
+    // 会话缺失/过期：清除本地用户态并回到登录页（业务端点与 /api/auth/me 未登录均为 401；
+    // 启动期间由 bootApp 统一收尾，避免与启动流程重复渲染）
+    window.__AUTH_USER__ = null;
+    syncAccountBtn();
+    if (!window.__BOOTING__ && store.state.view !== 'login') renderLogin();
+    throw new Error('请先登录');
+  }
   if (!res.ok) {
     let msg = `请求失败 (${res.status})`;
     try { msg = (await res.json()).error || msg; } catch {}
@@ -190,7 +198,7 @@ const modTint = (i) => MOD_TINTS[Math.abs(i) % MOD_TINTS.length];
 const store = {
   subjects: [],
   state: { view: 'home', subject: null, chapter: null, mode: null, questions: [], idx: 0, results: [], answers: [], timing: null },
-  wrong: JSON.parse(localStorage.getItem('wrong_questions') || '[]'), // [{id, content, answer, myAnswer, subject, chapter, time}]
+  wrong: [], // [{id, content, answer, myAnswer, subject, chapter, time}]；账户模式按用户分 key 缓存，登录后由 loadWrongCache 灌入（事实源为 /api/records/wrong）
   fav: new Set(), // 收藏题 id（服务端跨设备同步）
   notes: new Set(), // 笔记题 id（服务端跨设备同步；做题页「查看笔记/添加笔记」状态切换）
   noteMap: new Map(), // 笔记题 id → 笔记内容（弹层预填用，预载时与 notes 一起填充）
@@ -394,8 +402,24 @@ function showAnswerFeedback(q, j, selected) {
   if (s.idx >= s.questions.length - 1) toast('已是最后一题，点「交卷」结束');
 }
 
+/** 错题本地缓存 key：本地模式（游客/App）共享一份；服务器模式按用户分 key（wrong_questions_u<id>） */
+function wrongKey() {
+  if (window.__LOCAL_API_PROMISE__) return 'wrong_questions';
+  const u = window.__AUTH_USER__;
+  return u ? `wrong_questions_u${u.id}` : 'wrong_questions';
+}
+/** 登录/启动后按当前用户灌入错题缓存；owner（＝首用户）首次登录时继承旧共享缓存（存量个人数据归首用户） */
+function loadWrongCache() {
+  const key = wrongKey();
+  let raw = localStorage.getItem(key);
+  if (raw == null && !window.__LOCAL_API_PROMISE__ && window.__AUTH_USER__ && window.__AUTH_USER__.role === 'owner') {
+    const legacy = localStorage.getItem('wrong_questions');
+    if (legacy != null) { localStorage.setItem(key, legacy); raw = legacy; }
+  }
+  if (raw) { try { store.wrong = JSON.parse(raw).slice(0, 500); } catch {} }
+}
 function saveWrong() {
-  localStorage.setItem('wrong_questions', JSON.stringify(store.wrong.slice(0, 500)));
+  localStorage.setItem(wrongKey(), JSON.stringify(store.wrong.slice(0, 500)));
 }
 
 // ---------- 视图切换 ----------
@@ -409,7 +433,7 @@ function setView(name) {
   $('#bottom-nav').style.display = showNav ? 'flex' : 'none';
   $('#view').classList.toggle('no-bottom', !showNav);
   $('#view').removeAttribute('data-exam'); // 离开做题页：滑动切题/长按排除失效
-  $('#btn-back').style.visibility = (name === 'home') ? 'hidden' : 'visible';
+  $('#btn-back').style.visibility = (name === 'home' || name === 'login') ? 'hidden' : 'visible';
 }
 
 function goBack() {
@@ -431,6 +455,7 @@ function goBack() {
   else if (top.name === 'custom-batch') renderCustomBatch(top.batchId, true);
   else if (top.name === 'skill-import') renderAiSettings();
   else if (top.name === 'ability') renderAbility(true);
+  else if (top.name === 'account') renderHome(); // 防御：account 通常只作为栈顶，正常返回走上面各分支
   else renderHome();
 }
 
@@ -623,6 +648,9 @@ async function renderHome() {
     view.appendChild(grid);
 
     // 快捷入口
+    // AI 设置入口：本地模式（游客/App）始终显示；服务器模式仅管理员（owner）可见（普通用户后端已 403）
+    const aiQuick = (window.__LOCAL_API_PROMISE__ || window.__AUTH_USER__?.role === 'owner')
+      ? `<div class="quick-item" id="quick-ai"><span class="qi-ico qg-blue">${fico('sparkles', 22)}</span><span class="qi-label">AI 设置</span></div>` : '';
     const quick = el('div', 'card', `
       <h3>快捷入口</h3>
       <div class="quick-grid">
@@ -630,7 +658,7 @@ async function renderHome() {
         <div class="quick-item" id="quick-wrong"><span class="qi-ico qg-coral">${fico('book', 22)}</span><span class="qi-label" id="quick-wrong-label">错题本</span></div>
         <div class="quick-item" id="quick-fav"><span class="qi-ico qg-amber">${fico('star', 22)}</span><span class="qi-label" id="quick-fav-label">收藏</span></div>
         <div class="quick-item" id="quick-note"><span class="qi-ico qg-green">${fico('note', 22)}</span><span class="qi-label" id="quick-note-label">笔记</span></div>
-        <div class="quick-item" id="quick-ai"><span class="qi-ico qg-blue">${fico('sparkles', 22)}</span><span class="qi-label">AI 设置</span></div>
+        ${aiQuick}
         <div class="quick-item" id="quick-paper"><span class="qi-ico qg-orange">${fico('target', 22)}</span><span class="qi-label">智能组卷</span></div>
       </div>
     `);
@@ -643,7 +671,8 @@ async function renderHome() {
     $('#quick-wrong').onclick = () => renderWrong();
     $('#quick-fav').onclick = () => renderFavorites();
     $('#quick-note').onclick = () => renderNotes();
-    $('#quick-ai').onclick = () => renderAiSettings();
+    const elAiQuick = $('#quick-ai');
+    if (elAiQuick) elAiQuick.onclick = () => renderAiSettings();
     $('#quick-paper').onclick = () => openPaperConfig();
     // 服务端错题/收藏/笔记计数（异步刷新）
     api('/api/records/stats').then((s) => {
@@ -5409,11 +5438,219 @@ async function startNotesRandom(groupKey, subKey) {
   }
 }
 
-// ---------- AI 设置 ----------
+// ---------- 登录 / 注册 / 账号 ----------
+let authMode = 'login'; // 登录页双 tab 当前态：'login' | 'register'
+const PERSON_SVG = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>';
+const LOGOUT_SVG = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/></svg>';
+
+/** topbar 账号按钮：本地模式（游客/App）不显示；服务器模式未登录隐藏、登录后显示用户名首字 */
+function syncAccountBtn() {
+  const btn = $('#btn-account');
+  if (!btn) return;
+  if (window.__LOCAL_API_PROMISE__ || !window.__AUTH_USER__) { btn.style.display = 'none'; return; }
+  const u = window.__AUTH_USER__;
+  btn.style.display = 'flex';
+  btn.setAttribute('aria-label', `账号：${u.username}`);
+  btn.title = `${u.username} · ${u.role === 'owner' ? '站点管理员' : '普通用户'}`;
+  btn.innerHTML = `<span style="font-size:13px;font-weight:800">${esc(u.username.slice(0, 1).toUpperCase())}</span>`;
+  btn.onclick = () => renderAccount();
+}
+
+/** 登录成功后的公共收尾：记录用户态、刷新 topbar/错题缓存、回干净首页 */
+function onAuthed(user) {
+  window.__AUTH_USER__ = user;
+  syncAccountBtn();
+  loadWrongCache();
+  store.navStack = []; // login 不进导航栈：登录后直接回首页
+  renderHome();
+}
+
+function renderLogin() {
+  setView('login');
+  $('#app-title').textContent = '登录';
+  $('#btn-back').style.visibility = 'hidden';
+  syncAccountBtn();
+  const view = $('#view');
+  view.innerHTML = '';
+  const card = el('div', 'card', `
+    <h3 style="margin-bottom:2px">${PERSON_SVG} 登录 / 注册</h3>
+    <div class="auth-hint" style="margin:2px 0 16px">本站在线题库需要登录使用（邀请码由站点管理员提供）。</div>
+    <div class="auth-tabs">
+      <button class="auth-tab${authMode === 'login' ? ' active' : ''}" data-auth-tab="login">登录</button>
+      <button class="auth-tab${authMode === 'register' ? ' active' : ''}" data-auth-tab="register">注册</button>
+    </div>
+    <div id="auth-fields" style="display:flex;flex-direction:column;gap:12px"></div>
+  `);
+  view.appendChild(card);
+  card.querySelectorAll('[data-auth-tab]').forEach((b) => {
+    b.onclick = () => { authMode = b.dataset.authTab; renderLogin(); };
+  });
+  renderAuthFields(card);
+}
+
+function renderAuthFields(card) {
+  const fields = card.querySelector('#auth-fields');
+  const isReg = authMode === 'register';
+  fields.innerHTML = `
+    ${isReg ? `
+      <div class="auth-row"><label>用户名</label><input type="text" class="field-input" id="auth-user" autocomplete="username" placeholder="2–20 位字母、数字或下划线"></div>
+      <div class="auth-row"><label>密码</label><input type="password" class="field-input" id="auth-pass" autocomplete="new-password" placeholder="至少 8 位"></div>
+      <div class="auth-row"><label>确认密码</label><input type="password" class="field-input" id="auth-pass2" autocomplete="new-password" placeholder="再次输入密码"></div>
+      <div class="auth-row"><label>邀请码</label><input type="text" class="field-input" id="auth-invite" autocomplete="off" placeholder="由站点管理员提供"></div>
+      <div class="auth-hint">首个注册的账号将自动成为<b>站点管理员</b>并接管既有历史数据，其余账号为普通用户。</div>
+    ` : `
+      <div class="auth-row"><label>用户名</label><input type="text" class="field-input" id="auth-user" autocomplete="username" placeholder="输入用户名"></div>
+      <div class="auth-row"><label>密码</label><input type="password" class="field-input" id="auth-pass" autocomplete="current-password" placeholder="输入密码"></div>
+    `}
+    <div class="auth-err" id="auth-err" style="display:none"></div>
+    <button class="btn" id="auth-submit">${isReg ? `${PERSON_SVG.replace('17', '14')} 注册` : `${PERSON_SVG.replace('17', '14')} 登录`}</button>
+  `;
+  const userEl = fields.querySelector('#auth-user');
+  const passEl = fields.querySelector('#auth-pass');
+  const pass2El = fields.querySelector('#auth-pass2');
+  const inviteEl = fields.querySelector('#auth-invite');
+  const errEl = fields.querySelector('#auth-err');
+  const submitEl = fields.querySelector('#auth-submit');
+  const showErr = (m) => { errEl.textContent = m; errEl.style.display = 'block'; };
+  const submit = async () => {
+    errEl.style.display = 'none';
+    const username = userEl.value.trim();
+    const password = passEl.value;
+    try {
+      const r = isReg
+        ? await api('/api/auth/register', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, password, inviteCode: inviteEl.value.trim() }),
+          })
+        : await api('/api/auth/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, password }),
+          });
+      if (!r.ok) return showErr(r.message || '操作失败，请重试');
+      onAuthed(r.data.user);
+    } catch (e) { showErr(e.message); }
+  };
+  submitEl.onclick = submit;
+  [userEl, passEl, pass2El, inviteEl].forEach((el0) => {
+    if (el0) el0.onkeydown = (e) => { if (e.key === 'Enter') submit(); };
+  });
+  setTimeout(() => userEl.focus(), 30);
+}
+
+// ---------- 账号 ----------
+async function renderAccount(skipNav) {
+  setView('account');
+  $('#app-title').textContent = '账号';
+  [...document.querySelectorAll('#topbar-right > *:not(#btn-theme):not(#btn-account)')].forEach((n) => n.remove());
+  const view = $('#view');
+  const u = window.__AUTH_USER__;
+  if (!u) { renderLogin(); return; }
+  if (!skipNav) store.navStack.push({ name: 'account' });
+  view.innerHTML = '';
+  const card = el('div', 'card', `
+    <h3>${PERSON_SVG} 账号信息</h3>
+    <div class="auth-row" style="margin-top:12px"><label>用户名</label><div style="font-size:15px;font-weight:700">${esc(u.username)}</div></div>
+    <div class="auth-row" style="margin-top:6px"><label>角色</label><div style="font-size:14px">${u.role === 'owner' ? '<span class="badge badge-green">站点管理员</span><span class="auth-hint" style="margin-left:8px">可生成邀请码、管理 AI 配置</span>' : '普通用户'}</div></div>
+    <div class="auth-row" style="margin-top:6px"><label>注册时间</label><div style="font-size:14px">${esc(u.createdAt || '—')}</div></div>
+    <div style="margin-top:16px"><button class="btn btn-ghost" id="btn-logout">${LOGOUT_SVG} 退出登录</button></div>
+  `);
+  view.appendChild(card);
+  card.querySelector('#btn-logout').onclick = async () => {
+    try { await api('/api/auth/logout', { method: 'POST' }); } catch {}
+    window.__AUTH_USER__ = null;
+    syncAccountBtn();
+    store.navStack = [];
+    authMode = 'login';
+    renderLogin();
+  };
+  if (u.role === 'owner') await renderInvites(view);
+}
+
+/** 邀请码管理（仅 owner 服务器模式；后端已 403，此处只渲染入口） */
+async function renderInvites(view) {
+  let invites = [];
+  try {
+    const r = await api('/api/invites');
+    if (r && r.ok !== false && Array.isArray(r.data)) invites = r.data;
+  } catch {}
+  if (!window.__AUTH_USER__) return; // 中途被 401 弹回登录页：别再往登录视图追加卡片
+  const card = el('div', 'card', `
+    <h3>${ico('flag', 17)} 邀请码（${invites.length}）</h3>
+    <div class="li-sub">新用户注册需要邀请码。可指定<b>可用次数</b>（1–10 次）与<b>有效期</b>（1–90 天）；首注册引导码不可删除。</div>
+    <div id="invite-list" style="display:flex;flex-direction:column;gap:8px;margin-top:10px">
+      ${invites.map((inv) => `
+        <div class="inv-item" style="display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--border);border-radius:10px">
+          <div style="flex:1;min-width:0">
+            <b style="letter-spacing:1px">${esc(inv.code)}</b>
+            ${inv.bootstrap ? '<span class="badge badge-amber" style="margin-left:6px">首注册</span>' : ''}
+            ${inv.disabled ? '<span class="badge badge-red" style="margin-left:6px">已停用</span>' : ''}
+            <div class="li-sub">已用 ${inv.used_count}/${inv.max_uses} 次 · ${inv.expires_at ? '到期 ' + esc(String(inv.expires_at).slice(0, 10)) : '不过期'} · ${inv.created_at ? '创建于 ' + esc(String(inv.created_at).slice(0, 10)) : ''}</div>
+          </div>
+          ${inv.bootstrap ? '' : `<button class="btn btn-ghost" style="flex:0 0 auto;padding:6px 10px" data-inv-del="${inv.id}">${ico('trash', 13)} 删除</button>`}
+        </div>`).join('') || '<div class="empty" style="padding:10px 0">暂无邀请码，先生成一个吧</div>'}
+    </div>
+    <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap;align-items:center">
+      <label class="auth-hint" style="margin:0">次数</label>
+      <input type="number" class="field-input" id="inv-uses" min="1" max="10" value="1" style="width:86px" title="可用次数（1–10）">
+      <label class="auth-hint" style="margin:0">有效期/天</label>
+      <input type="number" class="field-input" id="inv-days" min="1" max="90" value="7" style="width:96px" title="有效期（1–90 天）">
+      <button class="btn" id="btn-invite-gen">${ico('plus', 14)} 生成</button>
+    </div>
+  `);
+  view.appendChild(card);
+  card.querySelector('#btn-invite-gen').onclick = async () => {
+    const maxUses = Math.min(Math.max(Math.floor(Number(card.querySelector('#inv-uses').value)) || 1, 1), 10);
+    const days = Math.min(Math.max(Math.floor(Number(card.querySelector('#inv-days').value)) || 7, 1), 90);
+    try {
+      const r = await api('/api/invites', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ maxUses, days }),
+      });
+      if (!r.ok) return toast(r.message || '生成失败');
+      toast(`已生成邀请码 ${r.data.code}`);
+      renderAccount(true); // 保持导航栈，重刷列表
+    } catch (e) { toast(e.message); }
+  };
+  card.querySelectorAll('[data-inv-del]').forEach((b) => {
+    b.onclick = async () => {
+      if (!confirm('删除该邀请码？已发出的邀请将立即失效。')) return;
+      try {
+        await api(`/api/invites/${b.dataset.invDel}`, { method: 'DELETE' });
+        toast('已删除');
+        renderAccount(true);
+      } catch (e) { toast(e.message); }
+    };
+  });
+}
+
+/** 收藏/笔记集合预加载（不阻塞首屏；登录后 / 本地模式才执行，未登录绝不预载受保护接口） */
+function preloadCollections() {
+  // 预加载收藏集合（不阻塞首屏；兼容旧纯数组结构）
+  api('/api/favorites').then((data) => {
+    const list = Array.isArray(data) ? data : (data.list || []);
+    store.fav = new Set(list.map((f) => f.questionId));
+    // 若在刷题页则刷新星标状态
+    const btn = $('#q-fav');
+    if (btn && store.state.questions.length) {
+      const q = store.state.questions[store.state.idx];
+      if (q) btn.innerHTML = store.fav.has(q.id) ? `<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">${ICO.star}</svg>` : ico('star', 15);
+    }
+  }).catch(() => {});
+  // 预加载笔记集合（不阻塞首屏；含内容缓存，供弹层预填；limit 拉满 200 覆盖常见量级）
+  api('/api/notes?limit=200&offset=0').then((data) => {
+    const list = Array.isArray(data) ? data : (data.list || []);
+    store.notes = new Set(list.map((f) => String(f.questionId)));
+    store.noteMap = new Map(list.map((f) => [String(f.questionId), f.note || '']));
+    refreshNoteButtons(); // 若在刷题页则刷新「添加笔记/查看笔记」按钮状态
+  }).catch(() => {});
+}
 async function renderAiSettings() {
   setView('ai');
   $('#app-title').textContent = 'AI 设置';
-  [...document.querySelectorAll('#topbar-right > *:not(#btn-theme)')].forEach(n => n.remove());
+  [...document.querySelectorAll('#topbar-right > *:not(#btn-theme):not(#btn-account)')].forEach((n) => n.remove());
   const view = $('#view');
   view.innerHTML = '<div class="spinner"></div>';
   let agents, skills = [], skillsErr = false;
@@ -6000,29 +6237,41 @@ matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
 });
 syncThemeBtn();
 
-// 启动（支持 ?view=ai 直接打开 AI 设置页，便于访问与测试）
-const initialView = new URLSearchParams(location.search).get('view');
-// 预加载收藏集合（不阻塞首屏；兼容旧纯数组结构）
-api('/api/favorites').then((data) => {
-  const list = Array.isArray(data) ? data : (data.list || []);
-  store.fav = new Set(list.map((f) => f.questionId));
-  // 若在刷题页则刷新星标状态
-  const btn = $('#q-fav');
-  if (btn && store.state.questions.length) {
-    const q = store.state.questions[store.state.idx];
-    if (q) btn.innerHTML = store.fav.has(q.id) ? `<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">${ICO.star}</svg>` : ico('star', 15);
+// 启动（支持 ?view=ai/?view=ability 直达）
+// 服务器模式：先 /api/auth/me 认证——未登录只显示登录页，绝不预载受保护接口；
+// 本地模式（?local=1 / App）：无账号体系，直进首页。
+async function bootApp() {
+  const initialView = new URLSearchParams(location.search).get('view');
+  const renderInitial = () => {
+    if (initialView === 'ai') renderAiSettings();
+    else if (initialView === 'ability') renderAbility();
+    else renderHome();
+  };
+  if (window.__LOCAL_API_PROMISE__) {
+    // 本地模式：等待本地路由就绪（避免预加载竞态），灌入错题缓存后直进首页
+    await window.__LOCAL_API_PROMISE__;
+    loadWrongCache();
+    preloadCollections();
+    renderInitial();
+    return;
   }
-}).catch(() => {});
-// 预加载笔记集合（不阻塞首屏；含内容缓存，供弹层预填；limit 拉满 200 覆盖常见量级）
-api('/api/notes?limit=200&offset=0').then((data) => {
-  const list = Array.isArray(data) ? data : (data.list || []);
-  store.notes = new Set(list.map((f) => String(f.questionId)));
-  store.noteMap = new Map(list.map((f) => [String(f.questionId), f.note || '']));
-  refreshNoteButtons(); // 若在刷题页则刷新「添加笔记/查看笔记」按钮状态
-}).catch(() => {});
-if (initialView === 'ai') renderAiSettings();
-else if (initialView === 'ability') renderAbility();
-else renderHome();
+  // 服务器模式
+  window.__BOOTING__ = true;
+  try {
+    const me = await api('/api/auth/me');
+    window.__AUTH_USER__ = me && me.data ? me.data.user : null;
+  } catch { window.__AUTH_USER__ = null; }
+  window.__BOOTING__ = false;
+  if (window.__AUTH_USER__) {
+    syncAccountBtn();
+    loadWrongCache();
+    preloadCollections();
+    renderInitial();
+  } else {
+    renderLogin();
+  }
+}
+bootApp();
 
 // ============ App 端自测钩子（调试用，正常使用不会触发）============
 // MainActivity 在页面加载后可调用 window.runSelfTest()，结果经 console.log 输出

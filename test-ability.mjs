@@ -64,22 +64,19 @@ test('radar-chart 模块可加载且暴露 drawRadar', async () => {
   assert.equal(typeof m.drawRadar, 'function');
 });
 
-// ---------- server /api/ability 冒烟（只读 GET，不写 practice.db） ----------
-import { spawn } from 'node:child_process';
-import net from 'node:net';
-const PORT = 4700 + Math.floor(Math.random() * 200); let server;
-test('server /api/ability 冒烟：形状正确（不写 practice.db）', async (t) => {
-  await new Promise((res) => { const s = net.createServer(); s.listen(PORT, () => { s.close(res); }); });
-  server = spawn(process.execPath, ['server.mjs', String(PORT)], { stdio: 'ignore', env: { ...process.env, AI_CONFIG_DB: '/tmp/ability-test-ai.db' } });
+// ---------- server /api/ability 冒烟（只读 GET，独立临时库 + 注册用户 cookie） ----------
+import { startAuthServer, registerUser, authFetch } from './auth-test-helper.mjs';
+test('server /api/ability 冒烟：形状正确（不写 practice.db）', async () => {
+  const s = await startAuthServer({ prefix: 'ability' });
+  const { cookie } = await registerUser(s.base, { username: 'abilitytester', inviteCode: s.bootCode });
   try {
-    for (let i = 0; i < 50; i++) { try { if ((await fetch(`http://localhost:${PORT}/`)).ok) break; } catch {} await new Promise((r) => setTimeout(r, 200)); }
-    const r = await fetch(`http://localhost:${PORT}/api/ability?target=0.72&exam=fujian`);
+    const r = await authFetch(s.base, cookie)(`/api/ability?target=0.72&exam=fujian`);
     const m = await r.json();
     assert.equal(m.groups.length, 6);
     assert.deepEqual(m.groups.map((g) => g.group), ['政治理论', '常识判断', '言语理解与表达', '数量关系', '判断推理', '资料分析']);
     for (const g of m.groups) for (const k of ['total', 'correct', 'rate', 'line', 'enough', 'met', 'subs']) assert.ok(k in g);
     assert.equal(Math.abs(m.weights.reduce((a, b) => a + b.w, 0) - 100) < 5, true);
   } finally {
-    if (server) { server.kill(); server = null; }
+    s.server.kill();
   }
 });
