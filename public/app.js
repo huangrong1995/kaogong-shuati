@@ -613,26 +613,17 @@ async function renderHome() {
 
     // 题库网格（试卷封面卡）
     const grid = el('div', 'subject-grid');
-    // 自定义题库入口卡（2026-08-15：文件导入 → 批次 → 刷题）
-    const customCard = el('div', 'subject-card custom-entry', `
-      <span class="emoji tint-cyan">${fico('database', 30)}</span>
-      <div class="name">自定义题库</div>
-      <div class="desc">导入 PDF / Excel / Word / TXT 题目，自由刷题</div>
-      <div class="stat-line"><span id="custom-batch-count">加载中…</span></div>
-    `);
-    customCard.onclick = () => renderCustomBank();
-    grid.appendChild(customCard);
-    api('/api/custom/batches').then((d) => {
-      const el0 = $('#custom-batch-count');
-      if (el0) el0.innerHTML = d.batches.length ? `<b>${d.batches.length}</b> 个批次 · <b>${d.batches.reduce((s, b) => s + b.count, 0)}</b> 题` : '暂无批次，点击导入';
-    }).catch(() => { const el0 = $('#custom-batch-count'); if (el0) el0.textContent = '点击导入'; });
+    // 科目卡排序：行测第一、申论第二，其余保持接口行序（用户 2026-10-23 要求）；subjects 接口行序各端不一致，故前端显式排序
+    const SUBJECT_PRIORITY = { '公务员·行测': 0, '公务员·申论': 1 };
+    const orderedSubjects = [...subjects].sort((a, b) =>
+      (SUBJECT_PRIORITY[a.subjectName] ?? 9) - (SUBJECT_PRIORITY[b.subjectName] ?? 9));
     const SUBJECT_TINTS = {
       '公务员·行测': 'tint-orange',
       '公务员·申论': 'tint-green',
       '事业编·综应': 'tint-violet',
       '事业编·职测': 'tint-blue',
     };
-    for (const s of subjects) {
+    for (const s of orderedSubjects) {
       const card = el('div', 'subject-card', `
         <span class="emoji ${SUBJECT_TINTS[s.subjectName] || ''}">${SUBJECT_ICONS[s.subjectName] || ''}</span>
         <div class="name">${s.subjectName}</div>
@@ -645,6 +636,21 @@ async function renderHome() {
       card.onclick = () => renderSubject(s.subjectName);
       grid.appendChild(card);
     }
+    // 自定义题库入口卡（2026-08-15：文件导入 → 批次 → 刷题）——插在行测、申论之后（第三位）
+    const customCard = el('div', 'subject-card custom-entry', `
+      <span class="emoji tint-cyan">${fico('database', 30)}</span>
+      <div class="name">自定义题库</div>
+      <div class="desc">导入 PDF / Excel / Word / TXT 题目，自由刷题</div>
+      <div class="stat-line"><span id="custom-batch-count">加载中…</span></div>
+    `);
+    customCard.onclick = () => renderCustomBank();
+    const customAt = Math.min(2, grid.children.length);
+    if (customAt < grid.children.length) grid.insertBefore(customCard, grid.children[customAt]);
+    else grid.appendChild(customCard);
+    api('/api/custom/batches').then((d) => {
+      const el0 = $('#custom-batch-count');
+      if (el0) el0.innerHTML = d.batches.length ? `<b>${d.batches.length}</b> 个批次 · <b>${d.batches.reduce((s, b) => s + b.count, 0)}</b> 题` : '暂无批次，点击导入';
+    }).catch(() => { const el0 = $('#custom-batch-count'); if (el0) el0.textContent = '点击导入'; });
     view.appendChild(grid);
 
     // 快捷入口
