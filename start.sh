@@ -24,6 +24,14 @@ set -u
 
 cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" || exit 1
 
+# ---------- 帮助 ----------
+usage() {
+  # 从脚本头部注释提取"用法"小节（#   行），改动头部注释时无需同步这里
+  sed -n '/^#  用法:/,/^#    可自由组合/p' "${BASH_SOURCE[0]}" \
+    | sed 's/^#   *//'
+  echo "完整说明见脚本头部注释；公网模式（--public）另见文档。"
+}
+
 # ---------- 参数 ----------
 PORT=3000
 AUTO_PORT=0
@@ -33,6 +41,7 @@ PUBLIC=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    -h|--help)  usage; exit 0 ;;
     -y|--auto-port) AUTO_PORT=1 ;;
     --no-open)      OPEN=0 ;;
     --public)       PUBLIC=1 ;;
@@ -42,7 +51,7 @@ while [ "$#" -gt 0 ]; do
         PORT="$1"
       else
         echo "❓ 未知参数: $1"
-        echo "   用法: ./start.sh [端口] [--public] [-y] [--no-open] [--no-reassemble]"
+        echo "   查看用法: ./start.sh --help"
         exit 1
       fi
       ;;
