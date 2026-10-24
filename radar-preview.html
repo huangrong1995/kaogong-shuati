@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>雷达图预览</title>
+<style>
+  :root {
+    --primary:#14508d; --primary-soft:rgba(20,80,141,.10); --green:#34c759; --green-soft:rgba(52,199,89,.12);
+    --accent:#b4843a; --text-2:rgba(16,35,56,.62); --text-3:rgba(16,35,56,.38);
+    --border:rgba(23,58,90,.15); --card:#fff; --bg:#eef2f6;
+  }
+  body { font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif; background:var(--bg); color:#102338; margin:0; padding:24px; }
+  h1 { font-size:16px; font-weight:700; margin:0 0 16px; }
+  .row { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:24px; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:16px; padding:20px; }
+  .card h2 { font-size:13px; font-weight:700; color:var(--text-2); margin:0 0 8px; }
+  canvas { width:100%; aspect-ratio:1/1; display:block; }
+</style>
+</head>
+<body>
+  <h1>雷达图预览 — 平滑多边形 + 圆环网格 + 顶点数值胶囊</h1>
+  <div class="row">
+    <div class="card"><h2>全达标（met 全绿）</h2><canvas id="a"></canvas></div>
+    <div class="card"><h2>部分达标 + 数据不足轴</h2><canvas id="b"></canvas></div>
+  </div>
+<script type="module">
+  import { drawRadar } from './public/lib/radar-chart.js';
+  const labels = ['言语理解与表达','判断推理','数量关系','资料分析','常识判断','申论'];
+  const metAll = [true,true,true,true,true,true];
+  const metMixed = [true,false,true,false,false,true];
+  // 全达标：各模块 70–90
+  drawRadar(document.getElementById('a'), {
+    labels, met: metAll,
+    values: [0.82,0.76,0.71,0.88,0.74,0.69],
+    lineValues: [0.78,0.75,0.72,0.8,0.74,0.7],
+    animate: true
+  });
+  // 部分达标：一个 0.9 超线、一个 0.55 严重不足、一个数据不足轴（insuff）
+  drawRadar(document.getElementById('b'), {
+    labels, met: metMixed,
+    values: [0.9,0.58,0.74,0.33,0.6,0.0],
+    lineValues: [0.8,0.75,0.72,0.78,0.7,0.71],
+    insuff: [false,false,false,false,false,true],
+    animate: true
+  });
+</script>
+</body>
+</html>
