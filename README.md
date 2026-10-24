@@ -31,11 +31,13 @@
 ## 运行
 
 - 环境要求：Node.js ≥ 22.5（使用内置 `node:sqlite`）
-- Windows 双击 `启动.bat`（自动打开浏览器），或：
+- Windows 双击 `启动.bat`、Linux/WSL 执行 `./start.sh`（都自动打开浏览器、自动重组题库），或手动：
 
   ```powershell
   node server.mjs 3000
   ```
+
+- 已有 Cloudflare Tunnel 配置（`~/.cloudflared/config.yml`）时，`./start.sh --public` 可一键同时拉起本地服务与 Tunnel（按 Ctrl+C 一并停止），并打印公网地址；`./start.sh` 详细用法见脚本头部注释
 
 - 首次克隆后先运行 `node tools/reassemble-tiku.mjs` 重组题库（见上方版权说明）；AI 功能需在「AI 设置」页（`http://localhost:3000/?view=ai`）配置 base_url + api_key（DeepSeek/通义/GLM/OpenAI/本地 Ollama 等 OpenAI 兼容网关均可，测试按钮可先试跑）
 - 数据文件：`tiku.db`（只读题库，随仓库分卷分发）、`materials.db`（申论材料）；`practice.db`（做题记录）、`ai-config.db`（AI 配置）为本地生成，不入仓库
@@ -55,7 +57,8 @@
 ├── app/                       # Capacitor Android 工程
 ├── ref-skills/                # 开源考公技能上游副本（仅参考，运行时从本地技能库加载）
 ├── docs/                      # 设计与技术文档
-└── 启动.bat                   # Windows 一键启动
+├── 启动.bat                   # Windows 一键启动
+└── start.sh                   # Linux/WSL 一键启动（./start.sh）
 ```
 
 ## 第三方开源组件致谢
