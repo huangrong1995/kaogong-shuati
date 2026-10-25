@@ -2729,6 +2729,46 @@ const server = http.createServer(async (req, res) => {
         }
         return json(res, 200, { ok: true, id: r.lastInsertRowid, removedFromWrong: correct === true });
       }
+      // 交卷批量落库（一次请求代替逐题 POST，大幅减少隧道往返——手机走 cloudflared 慢链路时交卷提速 20-30 倍）
+      if (pathname === '/api/records/batch' && req.method === 'POST') {
+        let body = '';
+        for await (const chunk of req) body += chunk;
+        const { records } = JSON.parse(body || '{}');
+        if (!Array.isArray(records) || !records.length) return err(res, 400, '缺少 records');
+        const stmt = pdb.prepare(`
+          INSERT INTO practice_records (question_id, paper_id, subject, chapter, question_type, selected, is_correct, cost_ms, group_key, sub_key, user_id)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+        const okDaysStmt = pdb.prepare('SELECT COUNT(DISTINCT date(created_at)) n FROM practice_records WHERE question_id = ? AND is_correct = 1 AND user_id = ?');
+        const archiveStmt = pdb.prepare('UPDATE practice_records SET archived = 1 WHERE question_id = ? AND is_correct = 0 AND archived = 0 AND user_id = ?');
+        let removedWrong = false;
+        withTx(() => {
+          for (const rec of records) {
+            if (!rec || rec.questionId == null) continue;
+            const cls = classifySource(rec.questionId);
+            stmt.run(
+              rec.questionId,
+              rec.paperId ?? cls.paperId ?? null,
+              rec.subject || '',
+              rec.chapter || '',
+              rec.type ?? 0,
+              JSON.stringify(rec.selected ?? null),
+              rec.correct == null ? null : (rec.correct ? 1 : 0),
+              rec.costMs ?? 0,
+              cls.groupKey, cls.subKey, uid,
+            );
+            // 错题自动移除：客观题累计做对 3 次（不同日期）→ 软删除
+            if (rec.correct === true) {
+              const okDays = okDaysStmt.get(rec.questionId, uid).n;
+              if (okDays >= 3) {
+                archiveStmt.run(rec.questionId, uid);
+                removedWrong = true;
+              }
+            }
+          }
+        });
+        return json(res, 200, { ok: true, count: records.length, removedWrong });
+      }
       // 能力矩阵（AI 能力诊断）：达标线 + 六大模块聚合（SQL+组装见模块级 buildAbility，与 lib/local-queries.mjs abilityMatrix 1:1，双端同步维护）
       // 只聚合 subject∈{公务员·行测,事业编·职测} 的客观题；按每次作答计；archived=1 不计；is_correct NULL（主观题）不计；
       // 正确率 = 非归档作答中 is_correct=1 占比；做题量不足（<5 次作答）→ enough=false（数据不足，不参与达标判定）。

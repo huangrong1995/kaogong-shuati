@@ -3665,7 +3665,8 @@ async function submitExam(force) {
     if (!s.answers[i]) s.answers[i] = { selected: null, correct: false, costMs: 0 };
     else s.answers[i].selected = null, s.answers[i].correct = false;
   }
-  // 批量落库 + 错题本
+  // 批量落库 + 错题本（一次批量请求代替逐题 POST：手机走隧道时从 30 次往返降到 1 次）
+  const records = [];
   for (let i = 0; i < s.questions.length; i++) {
     const q = s.questions[i];
     const a = s.answers[i];
@@ -3673,18 +3674,27 @@ async function submitExam(force) {
     // 多选已选但从未点「确认选择」的题：交卷时兜底判分，避免成绩页出现「无标准答案」
     const finalCorrect = a.correct != null ? a.correct : (j.valid ? j.ok : null);
     const selSorted = a.selected ? [...a.selected].sort((x, y) => x - y) : a.selected;
-    api('/api/records', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        questionId: q.id, subject: q.subject || s.subject, chapter: q.chapter, type: q.type,
-        selected: selSorted || [], correct: finalCorrect, costMs: a.costMs,
-      }),
-    }).catch(() => {});
+    records.push({
+      questionId: q.id, subject: q.subject || s.subject, chapter: q.chapter, type: q.type,
+      selected: selSorted || [], correct: finalCorrect, costMs: a.costMs,
+    });
     if (finalCorrect === false) {
       store.wrong.unshift({ id: q.id, content: q.content.slice(0, 60), answer: j.correct.join(','), myAnswer: a.selected ? [...a.selected].sort((x, y) => x - y).join(',') : '未答', subject: q.subject || s.subject, chapter: q.chapter, time: Date.now() });
       saveWrong();
     }
   }
+  // 批量上报：一次请求；失败（旧版服务端无此接口）回退逐条
+  api('/api/records/batch', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ records }),
+  }).catch(() => {
+    for (const rec of records) {
+      api('/api/records', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(rec),
+      }).catch(() => {});
+    }
+  });
   renderReview();
 }
 /** 漏答提示弹层：未答题号 + 继续作答 / 直接交卷 */
