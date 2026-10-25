@@ -37,7 +37,7 @@
   node server.mjs 3000
   ```
 
-- 已有 Cloudflare Tunnel 配置（`~/.cloudflared/config.yml`）时，`./start.sh --public` 可一键同时拉起本地服务与 Tunnel（按 Ctrl+C 一并停止），并打印公网地址；`./start.sh` 详细用法见脚本头部注释
+- 已有 Cloudflare Tunnel 配置（`~/.cloudflared/config.yml`）时，`./start.sh --public` 可一键同时拉起本地服务与 Tunnel（按 Ctrl+C 一并停止），并打印公网地址；`./start.sh --daemon --public` 可后台启动、`./start.sh --stop` 停止（任意终端）；详细用法见脚本头部注释
 
 - 首次克隆后先运行 `node tools/reassemble-tiku.mjs` 重组题库（见上方版权说明）；AI 功能需在「AI 设置」页（`http://localhost:3000/?view=ai`）配置 base_url + api_key（DeepSeek/通义/GLM/OpenAI/本地 Ollama 等 OpenAI 兼容网关均可，测试按钮可先试跑）
 - 数据文件：`tiku.db`（只读题库，随仓库分卷分发）、`materials.db`（申论材料）；`practice.db`（做题记录）、`ai-config.db`（AI 配置）为本地生成，不入仓库
