@@ -13,7 +13,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
-import { listAgents, getAgent, updateAgent, getHistory, callAgent, initAiConfig, listUserSkills, addUserSkill, deleteUserSkill } from './lib/ai-agents.mjs';
+import { listAgents, getAgent, updateAgent, getHistory, callAgent, consumeOpenAiStream, initAiConfig, listUserSkills, addUserSkill, deleteUserSkill } from './lib/ai-agents.mjs';
 import { extractMaterialFromPdf } from './lib/pdf-ocr.mjs';
 import { FENBI_TREE, ESSAY_TREE, SHENLUN_TREE, ZONGYING_TREE } from './lib/fenbi-tree.mjs';
 import { mapChapterToNode } from './lib/xingce-chapter-map.mjs';
@@ -362,6 +362,29 @@ const json = (res, code, data) => {
 };
 const err = (res, code, msg) => json(res, code, { error: msg });
 
+// ---------- SSE 流式输出（AI 生成接口 opt-in：请求带 Accept: text/event-stream 才走流式；
+// 否则与今天完全一致走 JSON，现有测试与 App/本地模式零影响） ----------
+const wantsStream = (req) => /text\/event-stream/i.test(req.headers.accept || '');
+// 开始 SSE 响应头（X-Accel-Buffering: no 防 Cloudflare/代理缓冲拖慢首帧）
+const startStream = (res) => {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.flushHeaders();
+};
+// 增量帧：data: {"d":"<JSON 转义的文本增量>"}\n\n（JSON 编码避免 \n\n 歧义）
+const streamWrite = (res, obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
+// 推理增量帧：data: {"r":"<思维链增量>"}\n\n（推理型模型先推 reasoning_content；前端显示思考过程）
+const streamReasoning = (res, rc) => streamWrite(res, { r: rc });
+// 结束帧：data: {"done":true, ...终态字段}\n\n 后关闭；终态字段与单次 JSON 响应逐字段一致
+const streamMeta = (res, obj) => {
+  res.write(`data: ${JSON.stringify({ done: true, ...obj })}\n\n`);
+  res.end();
+};
+
 // ---------- 账号/会话工具（HttpOnly Cookie session + scrypt 密码） ----------
 const COOKIE_NAME = 'sid';
 const SESSION_DAYS = 30;
@@ -476,8 +499,9 @@ const chunk = (arr, n) => { const out = []; for (let i = 0; i < arr.length; i +=
 
 /** 多模态识图调用（OpenAI 兼容 image_url 格式，用于 GLM-4.1V-Thinking-Flash / GLM-4V-Flash 等视觉模型）
  *  含 429 限流自动重试（免费视觉模型常见访问量过大）
- *  mode='ocr' 时提示词为作答文字转写，否则为图形/图表转写 */
-async function callVision(apiKey, baseUrl, model, imgs, mode = 'describe') {
+ *  mode='ocr' 时提示词为作答文字转写，否则为图形/图表转写
+ *  streamOpts = { stream?:bool, onDelta?:fn, onReasoning?:fn }：流式时逐增量回调，终态与单次一致（Anthropic 分支始终单次） */
+async function callVision(apiKey, baseUrl, model, imgs, mode = 'describe', streamOpts = {}) {
   if (!apiKey || !baseUrl) return { error: '未配置 API key/URL' };
   // 支持两种多模态协议：OpenAI 兼容（/chat/completions + image_url，GLM 系与各类中转网关）与
   // Anthropic Messages（/messages + image.source base64，MiniMax 官方 M3.1 等）
@@ -514,7 +538,7 @@ async function callVision(apiKey, baseUrl, model, imgs, mode = 'describe') {
       ] }],
       temperature: 0.1,
       max_tokens: mode === 'structure' ? 8000 : 4000,
-      stream: false,
+      stream: !!streamOpts.stream,
     };
     // 推理型模型（mimo/deepseek 等）默认思维链极长，会吃光 max_tokens 导致 content 为空；
     // 传 reasoning_effort=low 抑制过度思考（网关不支持时自动回退重试）
@@ -531,14 +555,15 @@ async function callVision(apiKey, baseUrl, model, imgs, mode = 'describe') {
         body: JSON.stringify(body),
         signal: ctrl.signal,
       });
-      clearTimeout(t);
       if (r.status === 429 || r.status >= 500) {
+        clearTimeout(t);
         lastErr = `识图 API ${r.status}（第 ${attempt} 次，稍后重试）`;
         // 429 限流（智谱等免费视觉模型 RPM 极低，重试本身也消耗配额）：等 60 秒、最多重试 2 次；其他 5xx 短等
         if (attempt < 3) await new Promise((res) => setTimeout(res, r.status === 429 ? 60000 : attempt * 4000));
         continue;
       }
       if (!r.ok) {
+        clearTimeout(t);
         const text = (await r.text()).slice(0, 200);
         // 部分模型 max_tokens 上限较低（如 glm-4v-flash 仅 1024）→ 降级后重试
         if (/max_tokens/i.test(text) && body.max_tokens > 1024 && attempt < 3) {
@@ -554,6 +579,28 @@ async function callVision(apiKey, baseUrl, model, imgs, mode = 'describe') {
         }
         return { error: `识图 API ${r.status}: ${text}` };
       }
+      // 流式分支（仅 OpenAI 方言；Anthropic 保持单次）：逐 delta 回调 onDelta，
+      // 终态空/截断语义与单次分支一致；流式阶段另设 90s 超时兜底
+      if (body.stream) {
+        clearTimeout(t);
+        const ctrl2 = new AbortController();
+        const t2 = setTimeout(() => ctrl2.abort(), 90000);
+        try {
+          const { text, finishReason } = await consumeOpenAiStream(r, streamOpts.onDelta, ctrl2.signal, streamOpts.onReasoning);
+          if (text) return { content: text };
+          if (finishReason === 'length') {
+            return { error: '识图模型输出超长被截断（思维链吃光 max_tokens）。请在 AI 设置页把识图转写员 max_tokens 调大到 8000 以上，或切换非推理型识图模型。' };
+          }
+          return { error: '识图返回为空' };
+        } catch (e) {
+          return e && e.name === 'AbortError'
+            ? { error: '识图生成超时，请稍后重试' }
+            : { error: `识图流式中断: ${e.message}` };
+        } finally {
+          clearTimeout(t2);
+        }
+      }
+      clearTimeout(t);
       const d = await r.json().catch(() => null);
       if (!d) return { error: `识图 API 返回异常：状态 200 但响应体不是有效 JSON（网关异常）` };
       // Anthropic Messages 文本在 content[] 的 text 块里（可能夹杂 thinking 块），OpenAI 在 choices[0].message.content
@@ -3061,8 +3108,14 @@ const server = http.createServer(async (req, res) => {
         if (!wrongItems.length) {
           return json(res, 200, { notice: '当前没有需要诊断的薄弱模块，先去刷题吧', content: null });
         }
-        const r = await callAgent(agent, formatDiagnosisPrompt(matrix, wrongItems));
-        if (r.error) return json(res, 200, { notice: r.error, content: null });
+        const wantsDiag = wantsStream(req);
+        if (wantsDiag) startStream(res);
+        const r = await callAgent(agent, formatDiagnosisPrompt(matrix, wrongItems), wantsDiag ? { stream: true, onDelta: (d) => streamWrite(res, { d }), onReasoning: (r) => streamReasoning(res, r) } : {});
+        if (r.error) {
+          if (wantsDiag) return streamMeta(res, { notice: r.error, content: null });
+          return json(res, 200, { notice: r.error, content: null });
+        }
+        if (wantsDiag) return streamMeta(res, { content: r.content, model: agent.model });
         return json(res, 200, { content: r.content, model: agent.model });
       }
       // 行测 AI 解析（真实调用行测解析 AI，按题目 + 作答情况生成解析）
@@ -3249,13 +3302,19 @@ const server = http.createServer(async (req, res) => {
         }
         // （材料查询与图表图片提取已提前到图片处理之前）
         const prompt = `【所属模块】${q.chapter || '未分类'}\n【题型】${isJudgment ? '判断' : isMulti ? '多选' : '单选'}${hasImage ? '（含图片/图形）' : '（纯文字）'}${materialText ? '（材料题）' : ''}\n【题干】${q.content}\n${opts.length ? `【选项】\n${opts.map((o, i) => `${LETTERS[i]}、${o}`).join('\n')}\n` : ''}${materialText ? `【材料】\n${materialText}\n` : ''}【正确答案】${correctText}\n【用户选择】${selectedText}${correct != null ? `\n【用户回答${correct ? '正确' : '错误'}】` : ''}${imageNote ? `\n${imageNote}\n（以上是 AI 识图转写的图片内容，请基于它解答图形/图表部分）` : ''}${hasImage && !imageNote ? '\n【注意】本题含图片但识图失败，你无法查看图片。请如实说明并提示用户结合题目原图，切勿猜测图形内容。' : ''}\n\n请解析这道题，输出以下结构：\n1. 【考点】本题考察的核心知识点\n2. 【正确项解析】为什么选这个答案\n3. 【错误项排除】其他选项为什么错（判断题/材料题可省略）\n4. 【解题技巧】这类题目的通用解法与避坑提醒\n语言简洁，面向备考学生。`;
-        const r = await callAgent(agent, prompt);
-        if (r.error) return json(res, 200, { notice: r.error, content: null, imageNote: imageNote || null });
+        const wantsExplain = wantsStream(req);
+        if (wantsExplain) startStream(res);
+        const r = await callAgent(agent, prompt, wantsExplain ? { stream: true, onDelta: (d) => streamWrite(res, { d }), onReasoning: (r) => streamReasoning(res, r) } : {});
+        if (r.error) {
+          if (wantsExplain) return streamMeta(res, { notice: r.error, content: null, imageNote: imageNote || null });
+          return json(res, 200, { notice: r.error, content: null, imageNote: imageNote || null });
+        }
         // 落库缓存：同一题同一作答下次秒回，不重复花钱
         try {
           pdb.prepare('INSERT OR REPLACE INTO ai_explains (user_id, question_id, selected, correct, content, image_note, model) VALUES (?, ?, ?, ?, ?, ?, ?)')
             .run(uid, questionId, selKey, corKey, r.content, imageNote || null, agent.model || '');
         } catch {}
+        if (wantsExplain) return streamMeta(res, { notice: '解析完成', content: r.content, imageNote: imageNote || null, cached: false });
         return json(res, 200, { notice: '解析完成', content: r.content, imageNote: imageNote || null, cached: false });
       }
       // ---- 识图导入作答（OCR）：拍照/上传答案图片 → 视觉AI 识别成文字 ----
@@ -3277,13 +3336,19 @@ const server = http.createServer(async (req, res) => {
         if (!key || !baseUrl) {
           return json(res, 200, { notice: '识图 AI 尚未配置 api_key，请到「AI 设置」页面填写后重试。', text: null });
         }
+        const wantsOcr = wantsStream(req);
+        if (wantsOcr) startStream(res);
         const v = await callVision(key, baseUrl, model, [{
           mime: m[1],
           b64: m[2],
           url: '(上传图片)',
           size: buf.length,
-        }], 'ocr');
-        if (v.error) return json(res, 200, { notice: v.error, text: null });
+        }], 'ocr', wantsOcr ? { stream: true, onDelta: (d) => streamWrite(res, { d }), onReasoning: (r) => streamReasoning(res, r) } : {});
+        if (v.error) {
+          if (wantsOcr) return streamMeta(res, { notice: v.error, text: null });
+          return json(res, 200, { notice: v.error, text: null });
+        }
+        if (wantsOcr) return streamMeta(res, { notice: '识别完成', text: v.content });
         return json(res, 200, { notice: '识别完成', text: v.content });
       }
       // ---- 自定义题库：题目筛选整理（custom-question-parser） ----
@@ -3305,22 +3370,40 @@ const server = http.createServer(async (req, res) => {
             return json(res, 200, { notice: '解析 AI 尚未配置 api_key，请到「AI 设置」页面填写后重试。', text: null });
           }
           const img = { mime: m[1], b64: m[2], url: '(上传图片)', size: buf.length };
-          // AI 优先：视觉模型直接看图理解整张图片
-          const v = await callVision(agent.api_key, agent.base_url, agent.model, [img], 'structure');
-          if (v.content) return json(res, 200, { notice: '解析完成', text: v.content });
-          // 降级：OCR 转文字 → 文本模型结构化
+          const wantsStructure = wantsStream(req);
+          if (wantsStructure) startStream(res);
+          // AI 优先：视觉模型直接看图理解整张图片（流式）
+          const v = await callVision(agent.api_key, agent.base_url, agent.model, [img], 'structure', wantsStructure ? { stream: true, onDelta: (d) => streamWrite(res, { d }), onReasoning: (r) => streamReasoning(res, r) } : {});
+          if (v.content) {
+            if (wantsStructure) return streamMeta(res, { notice: '解析完成', text: v.content });
+            return json(res, 200, { notice: '解析完成', text: v.content });
+          }
+          // 降级：OCR 转文字 → 文本模型结构化（prep 不流式；主解析流式）
           const ocr = await callVision(agent.api_key, agent.base_url, agent.model, [img], 'ocr');
-          if (ocr.error) return json(res, 200, { notice: v.error || ocr.error, text: null });
-          const r = await callAgent(agent, ocr.content);
-          if (r.error) return json(res, 200, { notice: r.error, text: null });
+          if (ocr.error) {
+            if (wantsStructure) return streamMeta(res, { notice: v.error || ocr.error, text: null });
+            return json(res, 200, { notice: v.error || ocr.error, text: null });
+          }
+          const r = await callAgent(agent, ocr.content, wantsStructure ? { stream: true, onDelta: (d) => streamWrite(res, { d }), onReasoning: (r) => streamReasoning(res, r) } : {});
+          if (r.error) {
+            if (wantsStructure) return streamMeta(res, { notice: r.error, text: null });
+            return json(res, 200, { notice: r.error, text: null });
+          }
+          if (wantsStructure) return streamMeta(res, { notice: '解析完成', text: r.content });
           return json(res, 200, { notice: '解析完成', text: r.content });
         }
         // 纯文本：空 key 快速失败（与图片分支一致；勿用空 key 调网关挂起 90s+）
         if (!agent.api_key || !agent.base_url) {
           return json(res, 200, { notice: '解析 AI 尚未配置 api_key，请到「AI 设置」页面填写后重试。', text: null });
         }
-        const r = await callAgent(agent, String(text));
-        if (r.error) return json(res, 200, { notice: r.error, text: null });
+        const wantsStructure = wantsStream(req);
+        if (wantsStructure) startStream(res);
+        const r = await callAgent(agent, String(text), wantsStructure ? { stream: true, onDelta: (d) => streamWrite(res, { d }), onReasoning: (r) => streamReasoning(res, r) } : {});
+        if (r.error) {
+          if (wantsStructure) return streamMeta(res, { notice: r.error, text: null });
+          return json(res, 200, { notice: r.error, text: null });
+        }
+        if (wantsStructure) return streamMeta(res, { notice: '解析完成', text: r.content });
         return json(res, 200, { notice: '解析完成', text: r.content });
       }
       // ---- 申论材料：查缓存 / 懒提取（PDF → Chrome 渲染 → GLM OCR） ----
@@ -3416,7 +3499,9 @@ const server = http.createServer(async (req, res) => {
           }
         }
         const prompt = `你是一名严格的申论/综应阅卷官，请按要点采分制批改。\n【题目要求】${q ? q.content : '(未提供题目)'}${fullScore ? `\n【满分】${fullScore} 分` : ''}${materialText ? `\n【给定材料】\n${materialText.slice(0, 8000)}\n` : '\n【注意】本题给定材料暂未关联，请基于题目要求评卷，并在结论中说明这一点。'}【用户作答】${content || '(空)'}\n\n评分必须按【满分】口径（禁止按 100 分制），先定档再给分（小题一档顶格 90%、大作文一类文顶格 80%）；不得编造考试统计、考场数据或题目出处；无官方评分细则时不得声称"漏某点固定扣 X 分"。\n\n请严格按以下格式输出批改结果：\n【总分】X/${fullScore || '满分'} 分\n【评分明细】逐条列出得分点与失分点（结合给定材料核对要点）\n【优点】2-3 条\n【不足】2-3 条，指出与题目要求及材料要点的差距\n【修改建议】具体、可操作的改进意见（针对内容、结构、语言）\n【参考思路】简要给出本题的答题思路/要点方向\n语言专业、中肯，面向备考学生。`;
-        const r = await callAgent(agent, prompt);
+        const wantsGrade = wantsStream(req);
+        if (wantsGrade) startStream(res);
+        const r = await callAgent(agent, prompt, wantsGrade ? { stream: true, onDelta: (d) => streamWrite(res, { d }), onReasoning: (r) => streamReasoning(res, r) } : {});
         // 批改记录落库（主观题 is_correct=NULL，计入做题数但不计正确率）
         if (questionId && q) {
           try {
@@ -3428,11 +3513,22 @@ const server = http.createServer(async (req, res) => {
             `).run(questionId, q.paperId, p?.subjectName || '', q.chapter || '', q.type, JSON.stringify({ answer: content }), cg.groupKey, cg.subKey, uid);
           } catch { /* 落库失败不影响批改 */ }
         }
-        if (r.error) return json(res, 200, { notice: r.error, score: null });
-        return json(res, 200, { notice: '批改完成', score: null, result: r.content, fullScore });
+        if (r.error) {
+          if (wantsGrade) return streamMeta(res, { notice: r.error, score: null });
+          return json(res, 200, { notice: r.error, score: null });
+        }
+        const gradeBody = { notice: '批改完成', score: null, result: r.content, fullScore };
+        if (wantsGrade) return streamMeta(res, gradeBody);
+        return json(res, 200, gradeBody);
       }
       return err(res, 404, '接口不存在');
     } catch (e) {
+      // 流式响应已提交：不能再回退 JSON（会 ERR_HTTP_HEADERS_SENT 崩进程），只能发结束帧收尾，
+      // 客户端把 notice + content:null 的结束帧当降级处理
+      if (res.headersSent) {
+        try { streamMeta(res, { notice: `生成中断: ${e.message}` }); } catch {}
+        return;
+      }
       return err(res, 500, `服务器错误: ${e.message}`);
     }
   }

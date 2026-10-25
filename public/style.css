@@ -1442,6 +1442,20 @@ textarea.field { resize: vertical; line-height: 1.6; }
 /* markdown 渲染的报告/AI 解析：HTML 块元素自身负责换行，标题/列表/代码分层排版。
    .md 通用类同时作用于能力诊断（.ai-diag.md）与行测解析（.ab-body.md） */
 .md, .ai-diag.md, .ab-body.md { white-space: normal; }
+/* 推理型 AI 的思考过程（reasoning_content）弱化展示：灰色小字，正文出现时会被前端移除 */
+.ai-thinking {
+  color: var(--muted, #9aa3b2);
+  font-size: 12px;
+  line-height: 1.7;
+  margin: 0 0 8px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--bg, rgba(0,0,0,0.03));
+  white-space: normal;
+  word-break: break-all;
+  opacity: 0.9;
+}
+.ai-thinking svg { vertical-align: -2.5px; margin-right: 4px; }
 .md h1, .md h2, .md h3,
 .ai-diag.md h1, .ai-diag.md h2, .ai-diag.md h3 {
   margin: 10px 0 6px; font-weight: 700; line-height: 1.5;

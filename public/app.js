@@ -83,14 +83,21 @@ const el = (tag, cls, html) => {
   return e;
 };
 
-const api = async (path, opts) => {
+const api = async (path, opts = {}) => {
   // 本地模式（无服务器）：window.__LOCAL_API_PROMISE__ 由 local-bootstrap.js 设置，
-  // 就绪后所有请求走本地路由（IndexedDB + sql.js 题库 + AI 直调）
+  // 就绪后所有请求走本地路由（IndexedDB + sql.js 题库 + AI 直调）。
+  // 流式参数在此被忽略：本地/App 端永远一次性返回（Consume 到完整对象），不退化。
   if (window.__LOCAL_API_PROMISE__) {
     const handler = await window.__LOCAL_API_PROMISE__;
     return handler(path, opts);
   }
-  const res = await fetch(path, opts);
+  // SSE 流式（仅服务器模式）：{ stream:true, onDelta(text), onReasoning(text)?, onDone(finalObj)? }
+  // 请求带 Accept: text/event-stream 才走流式；否则（含缓存命中/流前降级）一致走 JSON。
+  const { stream = false, onDelta, onReasoning, onDone, ...fetchOpts } = opts || {};
+  if (stream) {
+    fetchOpts.headers = { ...(fetchOpts.headers || {}), Accept: 'text/event-stream' };
+  }
+  const res = await fetch(path, fetchOpts);
   if (res.status === 401) {
     // 会话缺失/过期：清除本地用户态并回到登录页（业务端点与 /api/auth/me 未登录均为 401；
     // 启动期间由 bootApp 统一收尾，避免与启动流程重复渲染）
@@ -104,7 +111,103 @@ const api = async (path, opts) => {
     try { msg = (await res.json()).error || msg; } catch {}
     throw new Error(msg);
   }
-  return res.json();
+  // 服务器返回普通 JSON（非流式请求，或流式请求但服务端在 flush 前降级/缓存命中）
+  if (!stream || !/text\/event-stream/i.test(res.headers.get('content-type') || '')) {
+    return res.json();
+  }
+  // ---- SSE 解析：data: {"d":"增量"}\n\n 帧 + data: {"done":true,...}\n\n 结束帧 ----
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let buf = '';
+  let finalObj = null;
+  const handleBlock = (block) => {
+    const dataLine = block.split('\n').find((l) => l.startsWith('data:'));
+    if (!dataLine) return;
+    const payload = dataLine.slice(5).trim();
+    if (!payload) return;
+    let obj;
+    try { obj = JSON.parse(payload); } catch { return; }
+    if (obj.done) {
+      const { done, d, r, ...rest } = obj;
+      finalObj = rest;
+    } else if (typeof obj.d === 'string' && obj.d) {
+      onDelta && onDelta(obj.d);
+    } else if (typeof obj.r === 'string' && obj.r) {
+      // 推理链增量（推理型模型先输出 reasoning_content 再输出正文）：单独走 onReasoning
+      onReasoning && onReasoning(obj.r);
+    }
+  };
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    for (;;) {
+      const idx = buf.indexOf('\n\n');
+      if (idx < 0) break;
+      const block = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      // 块按行解析（可能多 data 行）；空块跳过
+      if (block.trim()) handleBlock(block);
+    }
+  }
+  if (buf.trim()) handleBlock(buf);
+  // 读中断 / 服务器未发结束帧：finalObj 为 null，让调用点的 catch 兜底（与服务器中途断连一致）
+  if (finalObj == null) throw new Error('AI 生成中断（连接已断开），请重试');
+  if (onDone) onDone(finalObj);
+  return finalObj;
+};
+
+// 流式文本累积器：push 逐段（节流 ms 回调一次 onText），flush 强制同步一次。
+// 用于 markdown 全量重渲（markdown.js 是整串块解析器，无法按增量插入）。
+const liveAccumulator = (onText, ms = 120) => {
+  let text = '';
+  let timer = null;
+  const fire = () => {
+    timer = null;
+    try { onText(text); } catch {}
+  };
+  return {
+    push(d) {
+      text += d;
+      if (!timer) timer = setTimeout(fire, ms);
+    },
+    flush() {
+      if (timer) { clearTimeout(timer); timer = null; }
+      try { onText(text); } catch {}
+    },
+    get text() { return text; },
+  };
+};
+
+// 思考过程区：推理型模型先推 reasoning_content（思维链）再推正文。
+// 把思维链弱化显示（灰色小字 + 思考图标），正文首段一出现即移除——等待期始终有可见反馈。
+// 返回 { push(rc), clear() }；无 reasoning 时 clear 是 no-op。
+const liveThinking = (parentEl, beforeEl = null) => {
+  let el = null;
+  let text = '';
+  let timer = null;
+  const fire = () => {
+    timer = null;
+    if (!el) return;
+    // 截断超长思维链，只留末尾（思考过程是过程展示，不是结果）
+    const shown = text.length > 500 ? '…' + text.slice(-500) : text;
+    el.textContent = `${ico('sparkles', 13)} 思考中… ${shown}`;
+  };
+  return {
+    push(rc) {
+      if (!el) {
+        el = el('div', 'ai-thinking');
+        if (beforeEl) parentEl.insertBefore(el, beforeEl);
+        else parentEl.appendChild(el);
+      }
+      text += rc;
+      if (!timer) timer = setTimeout(fire, 120);
+    },
+    clear() {
+      if (timer) { clearTimeout(timer); timer = null; }
+      if (el) { el.remove(); el = null; }
+    },
+  };
 };
 
 const SUBJECT_ICONS = {
@@ -1372,7 +1475,7 @@ async function customAiStructureImage(dataUrl, storeUrl, mode = 'ai') {
   // AI 模式：视觉模型直接看图结构化
   if (mode === 'ai') {
     try {
-      const res = await api('/api/ai/structure', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ image: dataUrl }) });
+      const res = await api('/api/ai/structure', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ image: dataUrl }), stream: true });
       if (res.text) jsonText = res.text; else notice = res.notice || '';
     } catch (e) { notice = e.message; }
     if (jsonText) {
@@ -1384,7 +1487,7 @@ async function customAiStructureImage(dataUrl, storeUrl, mode = 'ai') {
   // 降级 / 本地模式：OCR 转文字 → 文本解析
   let ocrText = '';
   try {
-    const r = await api('/api/ai/ocr', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ image: dataUrl, subject: '自定义' }) });
+    const r = await api('/api/ai/ocr', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ image: dataUrl, subject: '自定义' }), stream: true });
     if (r.text) ocrText = r.text; else notice = notice || r.notice || 'OCR 识别失败';
   } catch (e) { notice = notice || e.message; }
   if (ocrText) {
@@ -1411,7 +1514,7 @@ async function customAiStructureText(text, mode = 'ai') {
   if (chunks.length) {
     try {
       ai = await aiStructure(chunks, async (input) => {
-        const res = await api('/api/ai/structure', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: input }) });
+        const res = await api('/api/ai/structure', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: input }), stream: true });
         if (!res.text) throw new Error(res.notice || '解析失败');
         return res.text;
       });
@@ -3168,11 +3271,23 @@ function renderQuestion() {
       resultBox.style.display = 'block';
       resultBox.innerHTML = '<div class="spinner"></div>';
       try {
+        // 流式批改：逐增量 pre-wrap 实时渲染（textContent 无 XSS），终态与一次性完全一致
+        const livePre = el('pre', 'ai-live');
+        livePre.textContent = '';
+        resultBox.innerHTML = '';
+        resultBox.appendChild(livePre);
+        const acc = liveAccumulator((t) => { livePre.textContent = t; });
+        const think = liveThinking(resultBox);
         const r = await api('/api/ai/grade', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ questionId: q.id, content: text }),
+          stream: true,
+          onReasoning: (rc) => think.push(rc),
+          onDelta: (d) => { think.clear(); acc.push(d); },
         });
+        acc.flush();
+        think.clear();
         if (r.result) {
           resultBox.innerHTML = `<div class="ab-title">${ico('sparkles', 15)} AI 批改结果</div>${r.fullScore ? `<div style="font-size:13px;color:#8a8f98;margin:4px 0 8px">本题满分 ${esc(r.fullScore)} 分 · 批改分数请以此口径核对</div>` : ''}<div style="white-space:pre-wrap;font-size:14px;line-height:1.9">${esc(r.result)}</div>`;
         } else {
@@ -3822,13 +3937,22 @@ async function explainAllReview(cards, btn) {
       const a = s.answers[i] || {};
       const box = card.querySelector('.answer-box');
       box.style.display = 'block';
-      box.innerHTML = '<div class="spinner"></div>';
+      // 流式：先出标题 + 空 markdown 容器，增量节流重渲（markdown 整串渲染，min-height 防跳变）
+      box.innerHTML = `<div class="ab-title">${ico('sparkles', 15)} AI 解析中…</div><div class="ab-body md" style="min-height:140px"></div>`;
+      const mdEl = box.querySelector('.ab-body.md');
+      const mdMod = await import('./lib/markdown.js');
+      const acc = liveAccumulator((t) => { mdEl.innerHTML = mdMod.renderMarkdown(t); });
+      const think = liveThinking(box, mdEl);
       const r = await api('/api/ai/explain', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ questionId: q.id, selected: a.selected, correct: a.correct }),
+        stream: true,
+        onReasoning: (rc) => think.push(rc),
+        onDelta: (d) => { think.clear(); acc.push(d); },
       }).catch((e) => ({ notice: e.message }));
+      acc.flush();
+      think.clear();
       if (r.content) {
-        const mdMod = await import('./lib/markdown.js');
         box.innerHTML = `<div class="ab-title">${ico('sparkles', 15)} AI 解析${r.cached ? '<span class="ab-cache">（缓存）</span>' : ''}</div><div class="ab-body md">${mdMod.renderMarkdown(r.content)}</div>`;
       } else {
         box.innerHTML = `<div class="ab-title ab-err">${ico('alert', 15)} ${esc(r.notice || '解析失败')}</div>`;
@@ -3848,7 +3972,11 @@ async function explainReview(q, selected, correct, box, btn) {
     btn.disabled = true;
     btn.innerHTML = `${ico('sparkles', 15)} AI 解析中…`;
     box.style.display = 'block';
-    box.innerHTML = '<div class="spinner"></div>';
+    box.innerHTML = `<div class="ab-title">${ico('sparkles', 15)} AI 解析中…</div><div class="ab-body md" style="min-height:120px"></div>`;
+    const mdEl = box.querySelector('.ab-body.md');
+    const mdMod = await import('./lib/markdown.js');
+    const acc = liveAccumulator((t) => { mdEl.innerHTML = mdMod.renderMarkdown(t); });
+    const think = liveThinking(box, mdEl);
     const r = await api('/api/ai/explain', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify((() => {
@@ -3864,9 +3992,13 @@ async function explainReview(q, selected, correct, box, btn) {
         }
         return b;
       })()),
+      stream: true,
+      onReasoning: (rc) => think.push(rc),
+      onDelta: (d) => { think.clear(); acc.push(d); },
     }).catch((e) => ({ notice: e.message }));
+    acc.flush();
+    think.clear();
     if (r.content) {
-      const mdMod = await import('./lib/markdown.js');
       box.innerHTML = `<div class="ab-title">${ico('sparkles', 15)} AI 解析${r.cached ? ' <span style="color:var(--muted);font-size:11px">（缓存）</span>' : ''}</div><div class="ab-body md" style="font-size:13.5px">${mdMod.renderMarkdown(r.content)}</div>`;
     } else box.innerHTML = `<div class="ab-title" style="color:var(--red)">${ico('alert', 15)} ${esc(r.notice || r.error || '解析失败')}</div>`;
     btn.disabled = false;
@@ -3936,10 +4068,23 @@ async function runOcrAll(subject) {
     if (!status) { failed = '视图已切换，识别中止'; break; } // 识别中切题：安全退出
     status.innerHTML = `${ico('refresh', 14)} AI 识别第 ${i + 1}/${ocrQueue.length} 页…（约 5~20 秒）`;
     try {
+      // 流式 OCR：增量实时写进 #ocr-status 状态条（预览前 30 字，转义防注入）；
+      // App/本地模式忽略 stream 一次性回退，行为不变
       const r = await api('/api/ai/ocr', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ image: ocrQueue[i].dataUrl, subject }),
+        stream: true,
+        onReasoning: (rc) => {
+          if (status && status.isConnected) {
+            status.innerHTML = `${ico('refresh', 14)} AI 思考中（第 ${i + 1} 页）… ${esc(rc.slice(-40))}`;
+          }
+        },
+        onDelta: (d) => {
+          if (status && status.isConnected) {
+            status.innerHTML = `${ico('refresh', 14)} AI 识别第 ${i + 1}/${ocrQueue.length} 页… ${esc(d.slice(0, 30))}…`;
+          }
+        },
       });
       if (r.text) parts.push(r.text.trim());
       else { failed = `第 ${i + 1} 页：${r.notice || '识别失败'}`; break; }
@@ -4226,6 +4371,12 @@ async function explainQuestion(q, selected, correct, box) {  const btn = $('#btn
   result.style.display = 'block';
   result.innerHTML = '<div class="spinner" style="width:20px;height:20px"></div>';
   try {
+    // 流式：先出标题 + 空 markdown 容器，增量节流重渲；imageNote（识图 prep 结果）只在 done 帧拼
+    const mdMod = await import('./lib/markdown.js');
+    result.innerHTML = `<div class="ab-title">${ico('sparkles', 15)} AI 解析中…</div><div class="ab-body md" style="min-height:120px"></div>`;
+    const mdEl = result.querySelector('.ab-body.md');
+    const acc = liveAccumulator((t) => { mdEl.innerHTML = mdMod.renderMarkdown(t); });
+    const think = liveThinking(result, mdEl);
     const r = await api('/api/ai/explain', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -4242,10 +4393,14 @@ async function explainQuestion(q, selected, correct, box) {  const btn = $('#btn
         }
         return b;
       })()),
+      stream: true,
+      onReasoning: (rc) => think.push(rc),
+      onDelta: (d) => { think.clear(); acc.push(d); },
     });
+    acc.flush();
+    think.clear();
     if (r.content) {
       // markdown 渲染（粗体/列表/标题等），与能力诊断报告一致；原始内容转义后白名单解析
-      const mdMod = await import('./lib/markdown.js');
       let html = `<div class="ab-title">${ico('sparkles', 15)} AI 解析${r.cached ? ' <span style="color:var(--muted);font-size:11px">（缓存）</span>' : ''}</div>`;
       if (r.imageNote) {
         html += `<details style="margin-bottom:8px"><summary style="font-size:13px;color:var(--muted);cursor:pointer">${ico('camera', 13)} 查看 AI 识图转写（含图题）</summary><div style="white-space:pre-wrap;font-size:12.5px;line-height:1.7;color:var(--muted);margin-top:6px;background:var(--bg);padding:8px;border-radius:8px">${esc(r.imageNote.replace(/^【图片转写（AI 识图）】\s*/, ''))}</div></details>`;
@@ -4955,14 +5110,25 @@ async function abilityDiagnose() {
   abState.diagLoading = true;
   box.innerHTML = '';
   try {
+    // 流式：先出空 markdown 容器，增量节流重渲（markdown 整串渲染；App/本地模式忽略 stream 一次性回退）
+    const mdMod = await import('./lib/markdown.js');
+    const mdEl = el('div', 'ai-diag md');
+    mdEl.style.minHeight = '120px';
+    box.appendChild(mdEl);
+    const acc = liveAccumulator((t) => { mdEl.innerHTML = mdMod.renderMarkdown(t); });
+    const think = liveThinking(box, mdEl);
     const r = await api('/api/ai/diagnose', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ target: abilityTarget(s) / 100, exam: s.exam, k: s.k }),
+      stream: true,
+      onReasoning: (rc) => think.push(rc),
+      onDelta: (d) => { think.clear(); acc.push(d); },
     });
+    acc.flush();
+    think.clear();
     if (r && r.content) {
       // 报告为 markdown：转义后白名单渲染（标题/列表/粗体/代码块等），原始 HTML 不会注入
-      const mdMod = await import('./lib/markdown.js');
       const html = mdMod.renderMarkdown(r.content);
       box.innerHTML = `<div class="ai-diag md">${html}
         </div>
