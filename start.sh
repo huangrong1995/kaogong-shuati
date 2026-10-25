@@ -9,6 +9,8 @@
 #    ./start.sh -y            # 端口被占用时自动往后换（3000 → 3001 → …）
 #    ./start.sh --no-open     # 不自动打开浏览器
 #    ./start.sh --no-reassemble  # 缺 tiku.db 时不自动重组，直接报错退出
+#    ./start.sh --daemon      # 后台启动（可配 --public），日志写 /tmp；PID 记 /tmp/kaogong-daemon.pid
+#    ./start.sh --stop        # 停止后台启动的服务（读 PID 文件）
 #    可自由组合，如：./start.sh 8080 --public
 #
 #  公网模式（--public）：
@@ -38,6 +40,8 @@ AUTO_PORT=0
 OPEN=1
 NO_RE=0
 PUBLIC=0
+DAEMON=0
+STOP=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -45,6 +49,8 @@ while [ "$#" -gt 0 ]; do
     -y|--auto-port) AUTO_PORT=1 ;;
     --no-open)      OPEN=0 ;;
     --public)       PUBLIC=1 ;;
+    --daemon)       DAEMON=1 ;;
+    --stop)         STOP=1 ;;
     --no-reassemble) NO_RE=1 ;;
     *)
       if [[ "$1" =~ ^[0-9]+$ ]] && [ "$1" -ge 1 ] && [ "$1" -le 65535 ]; then
@@ -113,24 +119,19 @@ reassemble_if_needed() {
   fi
 }
 
-# ---------- 前置检查 ----------
-ensure_node
-node_ok || { echo "❌ 当前 Node 版本过低：$(node --version)，server.mjs 需要 22.5+。"; exit 1; }
+# 后台守护：把命令彻底脱离当前终端（新会话），日志追加到 $1
+# 用法: daemonize <日志文件> <命令...>
+daemonize() {
+  local log="$1"; shift
+  if command -v setsid >/dev/null 2>&1; then
+    setsid "$@" </dev/null >>"$log" 2>&1 &
+  else
+    nohup "$@" </dev/null >>"$log" 2>&1 &
+  fi
+}
 
-reassemble_if_needed
-
-if [ ! -f tiku-index.db ]; then
-  echo "⚠️  缺少 tiku-index.db（派生索引随仓库分发）。"
-  echo "   请确认已完整 git clone 本仓库（勿用第三方下载工具）；"
-  echo "   若已有 tiku.db 也可重建：node tools/build-index-db.mjs"
-  read -r -p "   仍要尝试启动吗? [y/N] " ans
-  case "$ans" in [yY]*) ;; *) exit 1 ;; esac
-fi
-
-# =====================================================================
-#  公网模式：server + Cloudflare Tunnel 一起起、一起停
-# =====================================================================
-if [ "$PUBLIC" -eq 1 ]; then
+# 解析 Cloudflare Tunnel 配置（--public / --daemon --public 共用）
+resolve_public() {
   CF="${CLOUDFLARED_CONFIG:-$HOME/.cloudflared/config.yml}"
   [ -f "$CF" ] || { echo "❌ 未找到 Tunnel 配置: $CF（可用 CLOUDFLARED_CONFIG 指定）"; exit 1; }
 
@@ -159,6 +160,133 @@ if [ "$PUBLIC" -eq 1 ]; then
 
   TLOG="${TMPDIR:-/tmp}/kaogong-cloudflared.log"
   : > "$TLOG"
+}
+
+# ---------- 后台守护：--stop ----------
+PID_FILE="${TMPDIR:-/tmp}/kaogong-daemon.pid"
+
+stop_daemon() {
+  if [ ! -f "$PID_FILE" ]; then
+    echo "❌ 没有后台启动记录（$PID_FILE）。默认前台模式直接 Ctrl+C 停止即可。"
+    exit 1
+  fi
+  local p killed=0
+  while read -r p; do
+    [ -z "$p" ] && continue
+    if kill -0 "$p" 2>/dev/null; then
+      kill "$p" 2>/dev/null && { echo "  ✅ 已停止（PID $p）"; killed=1; }
+    fi
+  done < "$PID_FILE"
+  rm -f "$PID_FILE"
+  [ "$killed" -eq 1 ] || echo "  （PID 文件里的进程都已不在，记录已清理）"
+  echo "已停止：后台服务已关闭。"
+  exit 0
+}
+
+# ---------- 后台守护：--daemon ----------
+daemon_start() {
+  # 已有实例判定：PID 文件存在且任一 PID 存活 → 拒绝重复启动
+  if [ -f "$PID_FILE" ]; then
+    local p any=""
+    while read -r p; do
+      [ -z "$p" ] && continue
+      kill -0 "$p" 2>/dev/null && any=1
+    done < "$PID_FILE"
+    if [ -n "$any" ]; then
+      echo "❌ 已有后台服务在运行（记录在 $PID_FILE）。请先 ./start.sh --stop"
+      exit 1
+    fi
+    rm -f "$PID_FILE"
+  fi
+
+  LOG_SRV="${TMPDIR:-/tmp}/kaogong-server.log"
+  : > "$LOG_SRV"
+
+  if [ "$PUBLIC" -eq 1 ]; then
+    resolve_public
+    daemonize "$LOG_SRV" node server.mjs "$PORT"
+    SERVER_PID=$!
+    daemonize "$TLOG" "$CFBIN" tunnel --config "$CF" run
+    TUNNEL_PID=$!
+    printf '%s\n%s\n' "$SERVER_PID" "$TUNNEL_PID" > "$PID_FILE"
+
+    # 等服务端口就绪
+    for _ in $(seq 1 30); do
+      port_busy "$PORT" && break
+      sleep 0.3
+    done
+    port_busy "$PORT" || {
+      echo "❌ 服务未能在几秒内就绪（日志：$LOG_SRV）"
+      kill "$SERVER_PID" "$TUNNEL_PID" 2>/dev/null
+      rm -f "$PID_FILE"
+      exit 1
+    }
+    echo
+    echo "  ✅ 已后台启动 → 公网 https://$CONF_HOST （本地 http://localhost:$PORT）"
+    echo "    PID: server=$SERVER_PID  tunnel=$TUNNEL_PID → $PID_FILE"
+    echo "    日志: $LOG_SRV | $TLOG"
+    echo "    停止: ./start.sh --stop"
+  else
+    if port_busy "$PORT"; then
+      echo "❌ 端口 $PORT 已被占用。"
+      exit 1
+    fi
+    daemonize "$LOG_SRV" node server.mjs "$PORT"
+    SERVER_PID=$!
+    echo "$SERVER_PID" > "$PID_FILE"
+
+    for _ in $(seq 1 30); do
+      port_busy "$PORT" && break
+      sleep 0.3
+    done
+    port_busy "$PORT" || {
+      echo "❌ 服务未能在几秒内就绪（日志：$LOG_SRV）"
+      kill "$SERVER_PID" 2>/dev/null
+      rm -f "$PID_FILE"
+      exit 1
+    }
+    echo
+    echo "  ✅ 已后台启动 → http://localhost:$PORT"
+    echo "    PID: $SERVER_PID → $PID_FILE"
+    echo "    日志: $LOG_SRV"
+    echo "    停止: ./start.sh --stop"
+  fi
+  exit 0
+}
+
+# ---------- --stop 优先处理（无需 node/题库检查） ----------
+if [ "$STOP" -eq 1 ]; then
+  stop_daemon
+fi
+
+# ---------- 前置检查 ----------
+ensure_node
+node_ok || { echo "❌ 当前 Node 版本过低：$(node --version)，server.mjs 需要 22.5+。"; exit 1; }
+
+reassemble_if_needed
+
+if [ ! -f tiku-index.db ]; then
+  echo "⚠️  缺少 tiku-index.db（派生索引随仓库分发）。"
+  echo "   请确认已完整 git clone 本仓库（勿用第三方下载工具）；"
+  echo "   若已有 tiku.db 也可重建：node tools/build-index-db.mjs"
+  if [ "$DAEMON" -eq 1 ]; then
+    echo "   （--daemon 不能交互确认，已取消启动）"
+    exit 1
+  fi
+  read -r -p "   仍要尝试启动吗? [y/N] " ans
+  case "$ans" in [yY]*) ;; *) exit 1 ;; esac
+fi
+
+# ---------- --daemon 分支（后台启动后立即返回） ----------
+if [ "$DAEMON" -eq 1 ]; then
+  daemon_start
+fi
+
+# =====================================================================
+#  公网模式：server + Cloudflare Tunnel 一起起、一起停
+# =====================================================================
+if [ "$PUBLIC" -eq 1 ]; then
+  resolve_public
 
   # 起服务与 tunnel（后台），前台阻塞等待任一退出
   node server.mjs "$PORT" &
