@@ -2799,8 +2799,9 @@ const server = http.createServer(async (req, res) => {
           WHERE user_id = ? ${tikuCond} ${timeCond} ${timeCond2}
         `).get(uid, ...tikuParams, ...timeParams, ...timeParams2);
         // 错题 = 严格答错（is_correct=0），与错题本口径一致（主观题 is_correct=NULL 不计入；archived 已从错题本移除的不计）
+        // 按题去重：同题多次做错只计一题（错题本「待订正题目」数）
         const wrong = pdb.prepare(`
-          SELECT COUNT(*) c FROM practice_records WHERE user_id = ? AND is_correct = 0 AND archived = 0
+          SELECT COUNT(DISTINCT question_id) c FROM practice_records WHERE user_id = ? AND is_correct = 0 AND archived = 0
           ${tikuCond} ${timeCond} ${timeCond2}
         `).get(uid, ...tikuParams, ...timeParams, ...timeParams2).c;
         const byChapter = pdb.prepare(`
@@ -2830,10 +2831,14 @@ const server = http.createServer(async (req, res) => {
         });
       }
       // 分组总览（5 大模块 + 未分类，供错题本页面上方 tab / 子模块列表）
+      // 按题去重后再分组（与下方 wrong 列表同口径；同题多条错题记录只算一题）
       if (pathname === '/api/records/wrong/groups' && req.method === 'GET') {
         const rows = pdb.prepare(`
-          SELECT group_key g, sub_key s, COUNT(*) c FROM practice_records
-          WHERE user_id = ? AND is_correct = 0 AND archived = 0 GROUP BY group_key, sub_key
+          SELECT group_key g, sub_key s, COUNT(*) c FROM (
+            SELECT group_key, sub_key, question_id,
+                   ROW_NUMBER() OVER (PARTITION BY question_id ORDER BY id DESC) rn
+            FROM practice_records WHERE user_id = ? AND is_correct = 0 AND archived = 0
+          ) WHERE rn = 1 GROUP BY group_key, sub_key
         `).all(uid);
         return json(res, 200, buildSourceGroups(rows));
       }
@@ -2848,10 +2853,15 @@ const server = http.createServer(async (req, res) => {
         const groupCond = hasGroup ? 'AND group_key = ?' : '';
         const subCond = sub !== '' ? 'AND sub_key = ?' : '';
         const params = hasGroup ? [group, ...(sub !== '' ? [sub] : []), limit, offset] : [limit, offset];
+        // 按题去重：同题多次做错会有多条 is_correct=0 记录（只有累计 3 天做对才 archived），
+        // 错题本是「待订正题目集合」，每题只取最新一条（max id）；与本地 local-api.js records.wrong 同构
         const rows = pdb.prepare(`
           SELECT id, question_id, subject, chapter, selected, created_at
-          FROM practice_records WHERE user_id = ? AND is_correct = 0 AND archived = 0 ${groupCond} ${subCond}
-          ORDER BY id DESC LIMIT ? OFFSET ?
+          FROM (
+            SELECT id, question_id, subject, chapter, selected, created_at,
+                   ROW_NUMBER() OVER (PARTITION BY question_id ORDER BY id DESC) rn
+            FROM practice_records WHERE user_id = ? AND is_correct = 0 AND archived = 0 ${groupCond} ${subCond}
+          ) WHERE rn = 1 ORDER BY id DESC LIMIT ? OFFSET ?
         `).all(uid, ...params);
         const list = rows.map((r) => {
           let q = null;
@@ -2877,8 +2887,8 @@ const server = http.createServer(async (req, res) => {
             type: q ? q.type : null,
           };
         });
-        // 返回总数（标题显示真实错题数）+ 分页游标，前端可"加载更多"
-        const total = pdb.prepare(`SELECT COUNT(*) n FROM practice_records WHERE user_id = ? AND is_correct = 0 AND archived = 0 ${groupCond} ${subCond}`).get(uid, ...(hasGroup ? [group, ...(sub !== '' ? [sub] : [])] : [])).n;
+        // 返回总数（标题显示真实错题数，按题去重与 list 同口径）+ 分页游标，前端可"加载更多"
+        const total = pdb.prepare(`SELECT COUNT(DISTINCT question_id) n FROM practice_records WHERE user_id = ? AND is_correct = 0 AND archived = 0 ${groupCond} ${subCond}`).get(uid, ...(hasGroup ? [group, ...(sub !== '' ? [sub] : [])] : [])).n;
         return json(res, 200, { list, total, offset, limit, hasMore: offset + list.length < total });
       }
       // 清空错题（软删除：archived=1，统计历史保留；按 id 单条移除；questionId 按题移除；subject 指定时只清该模块）

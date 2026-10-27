@@ -289,7 +289,8 @@ export function createRecordsApi(store, tiku, onChanged) {
       const total = records.length;
       const done = new Set(records.filter((r) => r.is_correct).map((r) => `${r.subject}|${r.question_id}`)).size;
       // 错题 = 严格答错（is_correct=0）；主观题（申论/综应 is_correct=null）不计入错题
-      const wrong = records.filter((r) => r.is_correct === 0).length;
+      // 按题去重（与 wrong()/server COUNT(DISTINCT question_id) 同构：同题多次做错只计一题）
+      const wrong = new Set(records.filter((r) => r.is_correct === 0).map((r) => r.question_id)).size;
       return { total, done, wrong };
     },
     /** 错题本（与 /api/records/wrong 同构：答错题去重 + 分页；只收 is_correct=0 的题；group/sub 按来源归档过滤） */
@@ -353,9 +354,15 @@ export function createRecordsApi(store, tiku, onChanged) {
     /** 来源分组总览（与 /api/records/wrong/groups、/api/favorites/groups、/api/notes/groups 同构）：
      *  target='wrong'|'favorites'|'notes' → [{key,name,count,subs:[...]}] */
     async groups(target) {
-      const rows = target === 'wrong'
+      let rows = target === 'wrong'
         ? (await store.getAll('records')).filter((r) => r.is_correct === 0)
         : await store.getAll(target);
+      // 错题按题去重（与 wrong()/server 同构：错题本每题一条，同题多次做错只计一题；取最新一条的归档）
+      if (target === 'wrong') {
+        rows = rows.slice().sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+        const seen = new Set();
+        rows = rows.filter((r) => (seen.has(r.question_id) ? false : (seen.add(r.question_id), true)));
+      }
       return buildLocalGroups(rows);
     },
     /** 一键整理（与 /api/organize 同构，幂等可重复）：按题目真实来源重算归档列，历史未分类题自动归类 */
