@@ -382,7 +382,31 @@ function renderTimerText() {
   const el = $('#timer-text');
   if (!el || !s.timing) return;
   el.textContent = s.timing.limit ? fmtTime(s.timing.remaining) : fmtTime(s.timing.elapsed);
+  // 建议用时：仅正计时模式显示（考试倒计时已有硬性时间预算，不再叠加噪音）
+  const g = $('#timer-suggest');
+  if (g) {
+    const sug = s.suggested;
+    if (!s.timing.limit && sug && sug.seconds > 0) {
+      g.style.display = '';
+      g.textContent = `建议 ${fmtTime(sug.seconds)}${sug.label ? ' · ' + sug.label : ''}`;
+    } else {
+      g.style.display = 'none';
+    }
+  }
 }
+// 建议用时：动态加载纯计算模块（复用 lib/xingce-chapter-map.js 的章节→模块映射）。
+// 加载成功后若已进入某套题（比如首次进入 quiz 时模块还没就绪），补算一次并刷新显示。
+let suggestCompute = null;
+const suggestReady = import('./lib/suggest-time.js')
+  .then((m) => {
+    suggestCompute = m.computeSuggested;
+    const s = store.state;
+    if (Array.isArray(s.questions) && s.questions.length && !s.suggested) {
+      s.suggested = suggestCompute(s.questions);
+    }
+    renderTimerText();
+  })
+  .catch(() => { suggestCompute = null; });
 function pauseToggle() {
   const s = store.state;
   if (!s.timing) return;
@@ -2454,6 +2478,8 @@ function enterQuiz(questions, subject, mode, chapter, mock, limitSec, backMode) 
   store.state.chapter = chapter ?? null;
   store.state.mock = mock ?? null;
   store.state.backMode = !!backMode;
+  // 建议用时：逐题按 模块×题型×难度 加权累加本卷参考秒（仅计算，渲染在计时条；计算模块异步就绪前为 null）
+  store.state.suggested = suggestCompute ? suggestCompute(questions) : null;
   stopTimer();
   startTimer(limitSec); // 组卷（mode='quiz'）传 durationMinutes×60 → 倒计时；其余正计时
   renderQuestion();
@@ -3050,10 +3076,12 @@ function renderQuestion() {
     view.appendChild(el('div', 'timer-bar', `
       <span class="timer-ico">${s.timing?.limit ? ico('hourglass', 15) : ico('clock', 15)}</span>
       <span id="timer-text">${s.timing?.limit ? fmtTime(s.timing.remaining) : fmtTime(s.timing?.elapsed ?? 0)}</span>
+      <span id="timer-suggest" class="timer-suggest" style="display:none" title="按国考行测时间分配（130 题/120 分钟）逐题推算：模块基准 × 题型权重（多选 1.4 / 判断 0.75）× 难度权重（简单 0.85 → 偏难 1.15），简单题收紧、难题放宽"></span>
       <button class="btn btn-ghost btn-sm" id="btn-pause" title="${s.timing?.running === false ? '继续' : '暂停'}">${s.timing?.running === false ? ico('play', 14) : ico('pause', 14)}</button>
       <span class="timer-tip">${s.backMode ? '背题模式：点选即看答案，不自动跳题' : (s.timing?.limit ? '倒计时结束自动交卷' : '交卷后查看解析与成绩')}</span>
     `));
     $('#btn-pause').onclick = pauseToggle;
+    renderTimerText(); // 填充建议用时的首帧（startTimer 调用时 #timer-suggest 尚未渲染）
   }
   // 答题进度条
   view.appendChild(el('div', 'q-progress-bar', `<div class="fill" style="width:${total ? Math.round(((s.idx + 1) / total) * 100) : 0}%"></div>`));

@@ -807,6 +807,7 @@ h1, h2, h3, .hs-num, .stat-card .num { font-family: inherit; font-variant-numeri
 }
 .timer-ico { font-size: 15px; display: inline-flex; align-items: center; }
 #timer-text { font-size: 15px; font-weight: 800; color: var(--primary); letter-spacing: 0; min-width: 52px; }
+.timer-suggest { font-size: 12px; font-weight: 600; color: var(--text-2); flex: 0 0 auto; white-space: nowrap; }
 .timer-bar .btn-sm { padding: 5px 10px; font-size: 13px; flex: 0 0 auto; }
 .timer-tip { margin-left: auto; font-size: 11px; color: var(--text-3); }
 
