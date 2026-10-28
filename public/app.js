@@ -183,29 +183,29 @@ const liveAccumulator = (onText, ms = 120) => {
 // 把思维链弱化显示（灰色小字 + 思考图标），正文首段一出现即移除——等待期始终有可见反馈。
 // 返回 { push(rc), clear() }；无 reasoning 时 clear 是 no-op。
 const liveThinking = (parentEl, beforeEl = null) => {
-  let el = null;
+  let box = null;
   let text = '';
   let timer = null;
   const fire = () => {
     timer = null;
-    if (!el) return;
+    if (!box) return;
     // 截断超长思维链，只留末尾（思考过程是过程展示，不是结果）
     const shown = text.length > 500 ? '…' + text.slice(-500) : text;
-    el.textContent = `${ico('sparkles', 13)} 思考中… ${shown}`;
+    box.textContent = `${ico('sparkles', 13)} 思考中… ${shown}`;
   };
   return {
     push(rc) {
-      if (!el) {
-        el = el('div', 'ai-thinking');
-        if (beforeEl) parentEl.insertBefore(el, beforeEl);
-        else parentEl.appendChild(el);
+      if (!box) {
+        box = el('div', 'ai-thinking');
+        if (beforeEl) parentEl.insertBefore(box, beforeEl);
+        else parentEl.appendChild(box);
       }
       text += rc;
       if (!timer) timer = setTimeout(fire, 120);
     },
     clear() {
       if (timer) { clearTimeout(timer); timer = null; }
-      if (el) { el.remove(); el = null; }
+      if (box) { box.remove(); box = null; }
     },
   };
 };
